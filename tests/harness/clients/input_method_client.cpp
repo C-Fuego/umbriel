@@ -57,7 +57,9 @@ namespace {
 
   void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
     auto& state = *static_cast<State*>(data);
-    if (std::strcmp(interface, wl_seat_interface.name) == 0) {
+    // The person's seat is the first one advertised: a compositor may have others (this one keeps an agent seat and one
+    // per output for a grown cursor), and a probe wants the one the person uses.
+    if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.seat == nullptr) {
       state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 1U)));
     } else if (std::strcmp(interface, zwp_input_method_manager_v2_interface.name) == 0) {
       state.inputMethodManager = static_cast<zwp_input_method_manager_v2*>(

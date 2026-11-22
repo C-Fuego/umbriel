@@ -2238,6 +2238,12 @@ namespace umbriel {
     if (m_inputCapture != nullptr && !keyboard->virtualDevice()) {
       m_inputCapture->addKeyboard(keyboard->wlr());
     }
+    // The agent seat watches what the person types, so it can give a window back
+    // the moment the person types into it. This is the one place every keyboard
+    // arrives, virtual ones included, and the seat's own is claimed before it.
+    if (m_agentSeat != nullptr) {
+      m_agentSeat->watchKeyboard(keyboard->wlr());
+    }
   }
 
   bool Server::cycleKeyboardLayout() {

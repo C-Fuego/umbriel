@@ -679,7 +679,8 @@ namespace {
       state.contentTypeManager = static_cast<wp_content_type_manager_v1*>(
           wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, std::min(version, 1U))
       );
-    } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
+    } else if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.seat == nullptr) {
+      // The person's seat is advertised first; do not replace it with the agent seat.
       state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 2U)));
       wl_seat_add_listener(state.seat, &kSeatListener, &state);
     } else if (std::strcmp(interface, wp_color_manager_v1_interface.name) == 0) {

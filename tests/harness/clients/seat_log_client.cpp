@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <optional>
 #include <poll.h>
 #include <print>
@@ -33,6 +34,7 @@
 #include <string_view>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <vector>
 #include <wayland-client.h>
 
 namespace {
@@ -43,6 +45,17 @@ namespace {
     Move,
     MoveOnMotion,
     ResizeRight,
+  };
+
+  // A compositor can offer more than one seat, and only the named one carries the input a check is about, so the
+  // client binds them all and adopts the seat whose name SEAT_NAME selects (the first, without it).
+  struct State;
+
+  struct SeatProxy {
+    State* state = nullptr;
+    wl_seat* seat = nullptr;
+    uint32_t capabilities = 0;
+    std::string name;
   };
 
   struct State {
@@ -91,6 +104,8 @@ namespace {
     // Surface-local pointer position from the latest enter or motion.
     double pointerX = 0;
     double pointerY = 0;
+    std::string wantedSeatName;
+    std::vector<std::unique_ptr<SeatProxy>> seats;
   };
 
   const char* keyStateName(uint32_t value) { return value == WL_KEYBOARD_KEY_STATE_PRESSED ? "pressed" : "released"; }
@@ -345,8 +360,7 @@ namespace {
 
   // The harness creates and destroys virtual input devices while the client
   // runs, so capabilities appear and disappear rather than staying constant.
-  void seatCapabilities(void* data, wl_seat* seat, uint32_t capabilities) {
-    auto& state = *static_cast<State*>(data);
+  void applySeatCapabilities(State& state, wl_seat* seat, uint32_t capabilities) {
     const bool hasPointer = (capabilities & WL_SEAT_CAPABILITY_POINTER) != 0;
     if (hasPointer && state.pointer == nullptr) {
       state.pointer = wl_seat_get_pointer(seat);
@@ -373,11 +387,28 @@ namespace {
     }
   }
 
-  void seatName(void*, wl_seat*, const char*) {}
+  void seatProxyCapabilities(void* data, wl_seat* seat, uint32_t capabilities) {
+    auto& proxy = *static_cast<SeatProxy*>(data);
+    proxy.capabilities = capabilities;
+    if (proxy.state->seat == seat) {
+      applySeatCapabilities(*proxy.state, seat, capabilities);
+    }
+  }
 
-  constexpr wl_seat_listener kSeatListener = {
-      .capabilities = seatCapabilities,
-      .name = seatName,
+  void seatProxyName(void* data, wl_seat* seat, const char* name) {
+    auto& proxy = *static_cast<SeatProxy*>(data);
+    proxy.name = name != nullptr ? name : "";
+    State& state = *proxy.state;
+    if (state.seat != nullptr || state.wantedSeatName.empty() || proxy.name != state.wantedSeatName) {
+      return;
+    }
+    state.seat = seat;
+    applySeatCapabilities(state, seat, proxy.capabilities);
+  }
+
+  constexpr wl_seat_listener kSeatProxyListener = {
+      .capabilities = seatProxyCapabilities,
+      .name = seatProxyName,
   };
 
   // Allocates the buffer for the current configured size, replacing any
@@ -472,8 +503,15 @@ namespace {
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
       state.shm = static_cast<wl_shm*>(wl_registry_bind(registry, name, &wl_shm_interface, 1));
     } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
-      state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5U)));
-      wl_seat_add_listener(state.seat, &kSeatListener, &state);
+      auto proxy = std::make_unique<SeatProxy>();
+      proxy->state = &state;
+      proxy->seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5U)));
+      wl_seat_add_listener(proxy->seat, &kSeatProxyListener, proxy.get());
+      // Without SEAT_NAME the first seat stays the one this client drives, which is what every other check expects.
+      if (state.wantedSeatName.empty() && state.seat == nullptr) {
+        state.seat = proxy->seat;
+      }
+      state.seats.push_back(std::move(proxy));
     } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
       state.wmBase = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, 1));
       xdg_wm_base_add_listener(state.wmBase, &kWmBaseListener, &state);
@@ -526,6 +564,9 @@ int main(int argc, char** argv) {
   state.lateTextInputState = std::getenv("TEXT_INPUT_LATE_STATE") != nullptr;
   state.logModifiers = std::getenv("LOG_MODIFIERS") != nullptr;
   state.logPointerInput = std::getenv("LOG_POINTER_INPUT") != nullptr;
+  if (const char* wantedSeat = std::getenv("SEAT_NAME"); wantedSeat != nullptr) {
+    state.wantedSeatName = wantedSeat;
+  }
   if (mode == "move-on-press") {
     state.pressAction = PressAction::Move;
   } else if (mode == "move-on-motion") {
@@ -541,6 +582,11 @@ int main(int argc, char** argv) {
   wl_registry* registry = wl_display_get_registry(state.display);
   wl_registry_add_listener(registry, &kRegistryListener, &state);
   wl_display_roundtrip(state.display);
+  // A seat picked by name is only adopted once its wl_seat.name event arrives,
+  // and that comes one roundtrip after the bind.
+  for (int attempt = 0; attempt < 10 && !state.wantedSeatName.empty() && state.seat == nullptr; attempt += 1) {
+    wl_display_roundtrip(state.display);
+  }
   if (state.compositor == nullptr || state.shm == nullptr || state.seat == nullptr || state.wmBase == nullptr) {
     std::println(stderr, "seat-log-client: missing required Wayland globals");
     return EXIT_FAILURE;

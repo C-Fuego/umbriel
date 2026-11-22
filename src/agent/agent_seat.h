@@ -48,6 +48,13 @@ namespace umbriel {
     bool isOn() const { return m_seat != nullptr; }
     // True once the person has taken the target over; the agent's input stops.
     bool takenOver() const { return m_takenOver; }
+    // The person used the seat on this window: a key typed into it, or a button
+    // pressed over it. When it is the taken window, the seat hands it back.
+    void notePersonInput(View* view);
+    // Watches a keyboard of the person's, so a key typed into the target window
+    // is seen. The agent's own keyboard is recognised and ignored, and keyboards
+    // that arrive later are passed in by Server::addKeyboard.
+    void watchKeyboard(wlr_keyboard* keyboard);
     // Forgets the target window; a later take starts clean.
     void release();
 
@@ -100,8 +107,6 @@ namespace umbriel {
     // The person used the seat on the target, or the client withdrew what the
     // agent holds: hand the window back.
     void handBack();
-    // A key press on the person's seat landed in the target window.
-    void notePersonInput(View* view);
 
     // Moves the window onto `output` through the compositor's own transfer.
     bool moveToOutput(View& view, std::string_view output, std::string* error);
@@ -114,10 +119,8 @@ namespace umbriel {
     bool focusTarget();
 
     static void onPersonKey(wl_listener* listener, void* data);
+    static void onPersonKeyboardDestroy(wl_listener* listener, void* data);
     static void onKeyboardFocusChange(wl_listener* listener, void* /*data*/);
-    static void onNewDevice(wl_listener* listener, void* data);
-
-    void watchKeyboard(wlr_keyboard* keyboard);
 
     void handlePersonKey(void* data);
     void handleKeyboardFocusChange();
@@ -150,11 +153,13 @@ namespace umbriel {
     // back to the seat, so the handler is a plain C callback.
     struct PersonKeyListener {
       wl_listener listener{};
+      // A virtual keyboard is torn down with its client, so the key listener has
+      // to come off before the keyboard goes: wlroots asserts it was the last.
+      wl_listener destroy{};
       AgentSeat* seat = nullptr;
       wlr_keyboard* keyboard = nullptr;
     };
     std::vector<std::unique_ptr<PersonKeyListener>> m_personKeyboards;
-    wl_listener m_newKeyboard{};
     wl_listener m_keyboardFocus{};
   };
 

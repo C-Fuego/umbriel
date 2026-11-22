@@ -1,5 +1,6 @@
 #include "input/cursor.h"
 
+#include "agent/agent_seat.h"
 #include "config/config.h"
 #include "core/log.h"
 #include "input/event_time.h"
@@ -52,6 +53,9 @@ namespace umbriel {
     constexpr double kDoubleClickSlop = 8.0;
     // Pointer travel between two events past this is a jump, not a shake: an output crossing or a warp.
     constexpr double kShakeMaxStep = 200.0;
+    // A back and forth is what tells a shake from a drag, so the travel has to
+    // change direction more than once before the cursor grows.
+    constexpr int kShakeReversals = 2;
 
     // The device pixel ratio the enlarged cursor is rendered at. A whole number keeps an Xcursor image from being
     // blurred into several device pixels per texel, so the largest output scale the pointer can reach decides it.
@@ -280,7 +284,8 @@ namespace umbriel {
     // A shake in progress must not carry over to a new scale or threshold.
     m_shakeTravel = 0;
     m_shakeSeeded = false;
-    m_shakeBackward = false;
+    m_shakeLastCell = 0;
+    m_shakeReversals = 0;
     if (configured.theme == m_xcursorTheme && configured.size == m_xcursorSize) {
       return;
     }
@@ -402,9 +407,9 @@ namespace umbriel {
     const double x = m_cursor->x;
     const double y = m_cursor->y;
     if (!settings.shakeToEnlarge) {
-      if (m_shakeTravel != 0) {
-        m_shakeTravel = 0;
-      }
+      m_shakeTravel = 0;
+      m_shakeReversals = 0;
+      m_shakeLastCell = 0;
       return;
     }
     if (!m_shakeSeeded) {
@@ -414,38 +419,39 @@ namespace umbriel {
       return;
     }
 
-    // Pointer events do not carry a timestamp here, so a shake is any run of
-    // travel that reverses direction, whichever way it started.
-    const double step = std::hypot(x - m_shakeX, y - m_shakeY);
+    const double dx = x - m_shakeX;
+    const double dy = y - m_shakeY;
     m_shakeX = x;
     m_shakeY = y;
+    const double step = std::hypot(dx, dy);
     if (step > kShakeMaxStep) {
-      // A cursor warped across the screen starts a new shake, not a fast one. The
-      // pointer can also land exactly where it last was, with nothing to say how
-      // it got there, so the travel so far is not carried across the jump either.
+      // A cursor warped across the screen starts over: neither the travel before
+      // it nor the direction it was going says anything about this shake.
       m_shakeTravel = 0;
-      m_shakeBackward = false;
+      m_shakeReversals = 0;
       m_shakeLastCell = 0;
-      m_shakeLastX = x;
       return;
     }
-    const double direction = x - m_shakeLastX;
-    if (direction != 0) {
-      const bool reversed = m_shakeLastCell != 0 && (direction > 0) != m_shakeBackward;
-      m_shakeLastCell = direction > 0 ? 1 : -1;
-      if (reversed) {
-        m_shakeBackward = !m_shakeBackward;
-        m_shakeTravel = 0;
-        return;
-      }
+    if (step == 0) {
+      return;
     }
-    m_shakeLastX = x;
+    // The axis the pointer moved along, with its direction, so a change of
+    // direction is one comparison away.
+    const bool horizontal = std::fabs(dx) >= std::fabs(dy);
+    const int8_t cell = horizontal ? static_cast<int8_t>(dx > 0 ? 1 : -1) : static_cast<int8_t>(dy > 0 ? 3 : -3);
+    if (m_shakeLastCell != 0 && cell != m_shakeLastCell) {
+      m_shakeReversals += 1;
+    }
+    m_shakeLastCell = cell;
     m_shakeTravel += step;
-    if (m_shakeTravel >= static_cast<double>(settings.shakeThreshold)) {
-      m_shakeTravel = 0;
-      if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
-        enlarge->trigger();
-      }
+    if (m_shakeReversals < kShakeReversals || m_shakeTravel < static_cast<double>(settings.shakeThreshold)) {
+      return;
+    }
+    m_shakeTravel = 0;
+    m_shakeReversals = 0;
+    m_shakeLastCell = 0;
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->trigger();
     }
   }
 
@@ -2023,6 +2029,14 @@ namespace umbriel {
     wlr_surface* surface = nullptr;
     LayerSurface* layer = nullptr;
     View* view = m_server->viewAt(m_cursor->x, m_cursor->y, &surface, &sx, &sy, &layer);
+
+    // Pressing a button over a window the agent took is the person reaching for
+    // it, no different from typing in it: the agent seat hands it back.
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED && view != nullptr) {
+      if (AgentSeat* agentSeat = m_server->agentSeat()) {
+        agentSeat->notePersonInput(view);
+      }
+    }
 
     if (m_server->sessionLocked()) {
       m_server->seat()->notifyPointerModifiers();

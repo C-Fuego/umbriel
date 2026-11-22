@@ -1050,6 +1050,13 @@ namespace umbriel {
       wl_display_flush_clients(m_display);
     }
     m_inputCapture.reset();
+    // Detach the agent's keyboard/focus listeners and release its target while
+    // the keyboards, views and outputs are still alive.
+    m_agentSeat.reset();
+    // Every output has a chair holding a scene node of that output's overlay
+    // layer and a listener on its destroy signal, so the chairs go before the
+    // outputs do: wlr_output_finish asserts no listener is left on it.
+    m_cursorEnlarge.reset();
     if (m_sessionActive.link.next != nullptr) {
       wl_list_remove(&m_sessionActive.link);
     }

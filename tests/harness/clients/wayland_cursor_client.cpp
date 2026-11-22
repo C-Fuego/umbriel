@@ -242,13 +242,15 @@ namespace {
       state.compositor = static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, 4));
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
       state.shm = static_cast<wl_shm*>(wl_registry_bind(registry, name, &wl_shm_interface, 1));
-    } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
-      state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 7U)));
-      wl_seat_add_listener(state.seat, &kSeatListener, &state);
-    } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
-      state.wmBase = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, 1));
-      xdg_wm_base_add_listener(state.wmBase, &kWmBaseListener, &state);
-    }
+    } else // The person's seat is the first one advertised: a compositor may have others (this one keeps an agent seat
+           // and one per output for a grown cursor), and a probe wants the one the person uses.
+      if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.seat == nullptr) {
+        state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 7U)));
+        wl_seat_add_listener(state.seat, &kSeatListener, &state);
+      } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
+        state.wmBase = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, 1));
+        xdg_wm_base_add_listener(state.wmBase, &kWmBaseListener, &state);
+      }
   }
   void registryRemove(void*, wl_registry*, uint32_t) {}
   constexpr wl_registry_listener kRegistryListener = {.global = registryGlobal, .global_remove = registryRemove};

@@ -40,7 +40,8 @@ namespace {
 
   void handleGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
     auto* state = static_cast<State*>(data);
-    if (std::strcmp(interface, wl_seat_interface.name) == 0) {
+    if (std::strcmp(interface, wl_seat_interface.name) == 0 && state->seat == nullptr) {
+      // The person's seat is advertised first; do not replace it with the agent seat.
       state->seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, 1));
     } else if (std::strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0) {
       state->pointerManager = static_cast<zwlr_virtual_pointer_manager_v1*>(

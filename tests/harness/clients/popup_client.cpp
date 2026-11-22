@@ -245,7 +245,8 @@ namespace {
       state.compositor = static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, 4));
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
       state.shm = static_cast<wl_shm*>(wl_registry_bind(registry, name, &wl_shm_interface, 1));
-    } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
+    } else if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.seat == nullptr) {
+      // The person's seat is advertised first; do not replace it with the agent seat.
       state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5U)));
       wl_seat_add_listener(state.seat, &kSeatListener, &state);
     } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {

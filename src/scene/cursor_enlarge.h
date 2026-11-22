@@ -39,12 +39,15 @@ namespace umbriel {
     // The device pixel ratio an Xcursor image is loaded at.
     void setScale(double scale);
     void setHidden(bool hidden);
-    // An output appeared, moved or went away: rebuild the buffers and seats.
+    // An output appeared, moved or went away: rebuild the buffers.
     void handleOutputLayoutChange();
 
   private:
-    // One output that shows the grown image: a scene buffer on its overlay for
-    // a client's own cursor, and a seat whose software cursor draws the theme's.
+    // One output that shows the grown image: a scene buffer of its own on the
+    // output's overlay. The image is drawn by the scene rather than by a
+    // software cursor, which is what makes the growth show on an output with no
+    // cursor plane. It needs no seat of its own, so cursor rendering does not
+    // add extra seat globals for clients to bind.
     struct Chair {
       Output* output = nullptr;
       wlr_scene_tree* tree = nullptr;
@@ -54,24 +57,27 @@ namespace umbriel {
       int originY = 0;
       int width = 0;
       int height = 0;
-      wlr_cursor* cursor = nullptr;
+      // The grown image: the size it is drawn at, in logical pixels, and where
+      // its hotspot sits inside it, so the arrow stays under the pointer.
+      int destWidth = 0;
+      int destHeight = 0;
+      double hotspotX = 0.0;
+      double hotspotY = 0.0;
       wl_listener destroy{};
-      wl_listener surfaceCommit{};
-      wl_listener surfaceDestroy{};
-      wlr_surface* surface = nullptr;
-      // Who attached the listeners above, which carry no data of their own.
+      // Who attached the listener above, which carries no data of its own.
       CursorEnlarge* owner = nullptr;
     };
 
     static void onOutputDestroy(wl_listener* listener, void* data);
-    static void onChairSurfaceCommit(wl_listener* listener, void* data);
-    static void onChairSurfaceDestroy(wl_listener* listener, void* data);
+    static void onSurfaceCommit(wl_listener* listener, void* data);
+    static void onSurfaceDestroy(wl_listener* listener, void* data);
 
     Chair* chairAt(Output* output);
     Chair& chairForOutput(Output& output);
     void rebuildChairs();
     void releaseChairs();
-    void detachSurface(Chair& chair);
+    void watchSurface(wlr_surface* surface);
+    void unwatchSurface();
     void hideImage(Chair& chair);
     void placeImage(Chair& chair);
     void applyImage(Chair& chair);
@@ -83,6 +89,10 @@ namespace umbriel {
     double m_zoom = 1.0;
     std::string m_shape;
     wlr_surface* m_surface = nullptr;
+    // The client cursor surface's own commits and its going away, watched once
+    // for every chair: each of them shows the same surface.
+    wl_listener m_surfaceCommit{};
+    wl_listener m_surfaceDestroy{};
     int32_t m_hotspotX = 0;
     int32_t m_hotspotY = 0;
     double m_scale = 1.0;

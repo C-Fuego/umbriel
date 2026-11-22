@@ -505,13 +505,14 @@ namespace umbriel {
     wl_event_source* m_sceneRefocusIdle = nullptr;
     bool m_compositorOwnsCursor = false;
     bool m_cursorHidden = false;
-    // Shake-to-enlarge travel since it last reversed direction.
+    // Shake-to-enlarge travel and the direction changes it made on the way: a
+    // shake is a back and forth, so the travel alone is not enough to tell it
+    // from a drag across the screen.
     double m_shakeTravel = 0;
     double m_shakeX = 0;
     double m_shakeY = 0;
-    double m_shakeLastX = 0;
     int8_t m_shakeLastCell = 0;
-    bool m_shakeBackward = false;
+    int m_shakeReversals = 0;
     bool m_shakeSeeded = false;
     std::string m_compositorCursorName;
     // What the focused client last asked the cursor to be, replayed when a

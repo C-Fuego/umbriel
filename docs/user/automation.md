@@ -23,6 +23,12 @@ One `wl_seat` named `agent`, created when the compositor starts. It has:
 - **Its own clipboard and drag state.** Copying in the agent's window does not replace what the person copied.
 - **One taken window at a time.** `agent take` moves the agent's focus there; `agent release` lets go.
 
+Applications must support a second Wayland seat to receive this input. `wl_registry` advertises `wl_seat` globals;
+after binding one, its `wl_seat.name` event identifies it as `agent` or `seat0` (the person's seat). The application
+must create pointer and keyboard objects for `agent`, not just its default seat. Taking a window does not add
+multi-seat support to its toolkit: a successful command is not proof that the application handled it. Verify the
+result on screen. An application can bind both seats; when the person clicks the taken window, the agent gives it back.
+
 `[agent] off = true` in the config keeps the seat from existing at all. It is read at startup, because a seat is registered with clients when it is created; turning it on later only makes the requests report `the agent seat is off`.
 
 ## Choose the window
@@ -129,7 +135,7 @@ agent seat: firefox "Inbox — Mozilla Firefox" [xdg-abc123]
 | Error                                                  | Why                                                                                     | What to do                                                                |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `the agent seat is off`                                | `[agent] off = true` at startup, or the seat could not be created                       | Remove `off` and restart; the seat is created once, at startup            |
-| `no window taken; take one first`                      | Input commands need a target                                                           | `umbriel agent take <window-id>`                                          |
+| `no window is taken; take one first`                   | Input commands need a target                                                           | `umbriel agent take <window-id>`                                          |
 | `window <id> is focused on the person's seat`          | The person is working in it                                                            | Pick another window, or ask them to switch away                           |
 | `window is not on a workspace`                         | The window is minimized, in a hidden tab, or a scratchpad window not on screen         | Bring it back first: `umbriel agent act window-toggle-minimize` or focus it |
 | `the session is locked`                                | The lock screen owns the session                                                        | Wait for it to unlock; agent input is never replayed across a lock       |
@@ -177,37 +183,23 @@ Capturing the agent's own output needs no window arithmetic at all, which is the
 
 ## A round trip
 
-Read the state, act, read again — and wait for the application between the two reads:
+Open a blank document in a Wayland editor that supports multiple seats, then move the person's focus to another window. List the available windows and copy the ID for your blank document.
 
 ```sh
-#!/bin/sh
-set -eu
-
-wait_window_count() {
-    i=0
-    while [ "$(umbriel agent --json | jq '.ok.windows | length')" -le "$1" ]; do
-        [ "$i" -lt 50 ] || { echo "no window appeared" >&2; exit 1; }
-        i=$((i + 1))
-        sleep 0.1
-    done
-}
-
-before=$(umbriel agent --json | jq '.ok.windows | length')
-umbriel agent spawn kitty
-wait_window_count "$before"
-id=$(umbriel agent --json | jq -r '.ok.windows[-1].id')
-
-umbriel agent take "$id"
-umbriel agent capture --json         # x, y, width, height of the window
-
-umbriel agent type 'echo agent was here'
-umbriel agent key 28                 # Enter
-umbriel agent capture --json         # the geometry is unchanged; the picture is what changed
-
-umbriel agent release
+umbriel agent --json | jq -r '.ok.windows[] | [.id, .app_id, .title] | @tsv'
 ```
 
-Each step reads before it acts because a query answers what the compositor has already applied: `{"ok": …}` means the input was delivered, not that the application finished reacting. Polling the query is what waits for the application.
+Substitute the ID and take a picture of the document. Use the picture to locate the editing area inside the window, then replace `120 80` with those window-local coordinates.
+
+```sh
+umbriel agent take '<window-id>'
+grim -g "$(umbriel agent capture | awk '{print $1" "$2}')" before.png
+umbriel agent click left 120 80
+umbriel agent type 'agent input check'
+grim -g "$(umbriel agent capture | awk '{print $1" "$2}')" after.png
+```
+
+Check `after.png` for the text before sending more input. The command reply reports compositor-side success. If the editor is still drawing, capture another frame. If the text never appears, check the target, the click coordinates, and the editor's multi-seat support. `agent capture` returns geometry. Use `grim -o AGENT-1` if you configured that output and want a picture of the whole output. Once verified, run `umbriel agent release`.
 
 ## What to prefer
 

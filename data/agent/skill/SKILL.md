@@ -34,7 +34,9 @@ umbriel agent --json
 - `{"err": "the agent seat is off"}` — `[agent] off = true` at startup. The person must restart the compositor with it removed. Do not try to work around it.
 - `{"ok": {"on": true, "taken_over": false, "window": null, "windows": [...]}}` — the seat is there; `windows` lists every mapped window with `id`, `app_id`, `title`, `workspace`, `output`, `x`, `y`, `w`, `h`, `focused`, `visible`.
 
-A window the person is focused in cannot be taken (`is focused on the person's seat`). That is deliberate: their view is not yours to move. Ask, or take another window.
+The application must support a second Wayland seat: bind the `wl_seat` globals advertised by `wl_registry`, identify
+`agent` through its `wl_seat.name` event, and create pointer and keyboard objects for it. Taking a window cannot add
+multi-seat support to a toolkit that lacks it. A successful command is not proof of delivery; verify the result on screen. A window the person is focused in cannot be taken (`is focused on the person's seat`). That is deliberate: their view is not yours to move. Ask, or take another window.
 
 ## Take a window
 
@@ -107,7 +109,7 @@ Poll rather than sleep blindly: a query answers what the compositor has already 
 | Reply                                                        | Meaning                                                       | Move                                                     |
 | ------------------------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------- |
 | `the agent seat is off`                                      | `[agent] off = true`; the seat is a startup setting           | Stop and report; only a restart with the setting removed helps |
-| `no window taken; take one first`                            | An input command with no target                               | `umbriel agent take <window-id>`                          |
+| `no window is taken; take one first`                         | An input command with no target                               | `umbriel agent take <window-id>`                          |
 | `window <id> is focused on the person's seat`                | The person is working in it                                   | Take another window, or ask them to leave it              |
 | `window is not on a workspace`                               | Minimized, a hidden tab, or a scratchpad window off screen    | `umbriel agent act window-toggle-minimize`, or focus it   |
 | `the session is locked`                                      | The lock screen owns the session                              | Stop. Nothing is replayed after unlock                    |

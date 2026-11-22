@@ -110,7 +110,8 @@ namespace {
     if (std::string_view(interface) == zwlr_foreign_toplevel_manager_v1_interface.name) {
       state.managerName = name;
       state.managerVersion = version;
-    } else if (std::string_view(interface) == wl_seat_interface.name) {
+    } else if (std::string_view(interface) == wl_seat_interface.name && state.seat == nullptr) {
+      // The person's seat is advertised first; do not replace it with the agent seat.
       state.seatVersion = std::min(version, 9U);
       state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, state.seatVersion));
     } else if (std::string_view(interface) == wl_output_interface.name) {

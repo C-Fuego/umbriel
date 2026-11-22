@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <linux/input-event-codes.h>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <wayland-server-protocol.h>
@@ -51,10 +52,16 @@ namespace umbriel {
     for (const auto& keyboard : m_server->keyboards()) {
       watchKeyboard(keyboard->wlr());
     }
-    m_newKeyboard.notify = onNewDevice;
-    wl_signal_add(&m_server->backend()->events.new_input, &m_newKeyboard);
     m_keyboardFocus.notify = onKeyboardFocusChange;
     wl_signal_add(&m_seat->keyboard_state.events.focus_change, &m_keyboardFocus);
+
+    // The devices are made now rather than when a window is taken: a client
+    // makes its wl_pointer and wl_keyboard when it hears the seat's
+    // capabilities, and an enter sent before it has them would go nowhere.
+    std::string error;
+    if (!createVirtualDevices(&error)) {
+      logWarn("agent seat: {}", error);
+    }
   }
 
   AgentSeat::~AgentSeat() {
@@ -62,9 +69,11 @@ namespace umbriel {
     // still alive here, so each list is walked rather than cleared.
     for (const auto& entry : m_personKeyboards) {
       wl_list_remove(&entry->listener.link);
+      // The destroy listener has to come off too: clients are torn down after
+      // this seat is, and a keyboard going away would call back into it.
+      wl_list_remove(&entry->destroy.link);
     }
     m_personKeyboards.clear();
-    wl_list_remove(&m_newKeyboard.link);
     if (m_keyboardFocus.link.next != nullptr) {
       wl_list_remove(&m_keyboardFocus.link);
     }
@@ -79,6 +88,9 @@ namespace umbriel {
     }
     Virtual devices = *m_virtual;
     m_virtual.reset();
+    // Nothing is left to drive: a seat with no devices must not keep offering
+    // them, or a client keeps pointer state that can never be updated.
+    wlr_seat_set_capabilities(m_seat, 0);
     // Destroying each resource tears its device down exactly as a client
     // disconnecting would, so no device outlives the seat that made it. The
     // destroy listeners stay in place for this: they are what clears m_virtual
@@ -101,7 +113,8 @@ namespace umbriel {
     m_previousOutput.clear();
     wlr_seat_keyboard_notify_clear_focus(m_seat);
     wlr_seat_pointer_clear_focus(m_seat);
-    destroyVirtualDevices();
+    // Keep capabilities stable across releases: clients must already have
+    // their pointer and keyboard resources when the next take sends enter.
     m_target = nullptr;
     m_targetId.clear();
     m_takenOver = false;
@@ -220,6 +233,9 @@ namespace umbriel {
     );
 
     m_virtual = devices;
+    // Advertise the devices as soon as they exist, so a client binding this
+    // seat builds its wl_pointer and wl_keyboard right away.
+    wlr_seat_set_capabilities(m_seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     return true;
   }
 
@@ -390,9 +406,23 @@ namespace umbriel {
     if (!prepare(m_target, error)) {
       return false;
     }
-    // wl_pointer numbers buttons 8 above their Linux code, so a client reading
-    // a 1-3 click sees what it would from a real mouse.
-    const uint32_t protocolButton = button + 8;
+    // A pointer button on the wire is the Linux input code, the same number a
+    // real mouse sends: 1-5 is the order the command reads, not what the client
+    // gets.
+    const uint32_t protocolButton = [button] {
+      switch (button) {
+      case 1:
+        return BTN_LEFT;
+      case 2:
+        return BTN_MIDDLE;
+      case 3:
+        return BTN_RIGHT;
+      case 4:
+        return BTN_SIDE;
+      default:
+        return BTN_EXTRA;
+      }
+    }();
     wlr_seat_pointer_notify_button(
         m_seat, 0, protocolButton, pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED
     );
@@ -426,14 +456,25 @@ namespace umbriel {
     if (!m_virtual || m_virtual->keyboard == nullptr) {
       return false;
     }
+    // The seat's own notify path, the one a real keyboard's events go through,
+    // so a keyboard grab sees the agent's keys too.
     wlr_keyboard* keyboard = &m_virtual->keyboard->keyboard;
-    wlr_keyboard_key_event event{};
-    event.time_msec = static_cast<uint32_t>(m_server->uptimeMs());
-    event.keycode = keycode;
-    event.update_state = true;
-    event.state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
     wlr_seat_set_keyboard(m_seat, keyboard);
-    wlr_keyboard_notify_key(keyboard, &event);
+    // The seat sends what it is told and nothing else, so the modifier state the
+    // client is told about is kept here: a Shift the agent holds has to arrive
+    // as a modifier, or `type` would send the unshifted character.
+    if (keyboard->xkb_state != nullptr) {
+      xkb_state_update_key(keyboard->xkb_state, keycode + 8, pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
+      keyboard->modifiers.depressed = xkb_state_serialize_mods(keyboard->xkb_state, XKB_STATE_MODS_DEPRESSED);
+      keyboard->modifiers.latched = xkb_state_serialize_mods(keyboard->xkb_state, XKB_STATE_MODS_LATCHED);
+      keyboard->modifiers.locked = xkb_state_serialize_mods(keyboard->xkb_state, XKB_STATE_MODS_LOCKED);
+      keyboard->modifiers.group = xkb_state_serialize_layout(keyboard->xkb_state, XKB_STATE_LAYOUT_EFFECTIVE);
+      wlr_seat_keyboard_notify_modifiers(m_seat, &keyboard->modifiers);
+    }
+    wlr_seat_keyboard_notify_key(
+        m_seat, static_cast<uint32_t>(m_server->uptimeMs()), keycode,
+        pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED
+    );
     return true;
   }
 
@@ -511,6 +552,8 @@ namespace umbriel {
         }
         return false;
       }
+      // xkb counts keys from 8 above the evdev code the client is told about.
+      code -= 8;
       // The level a keysym sits at is what its modifiers are: level 1 comes from
       // Shift, and the levels above 2 from AltGr (Mod5) on the layouts that have
       // one, which is where most non-Latin characters live.
@@ -540,20 +583,32 @@ namespace umbriel {
     if (keyboard == nullptr) {
       return;
     }
+    const auto known =
+        std::ranges::find_if(m_personKeyboards, [keyboard](const auto& entry) { return entry->keyboard == keyboard; });
+    if (known != m_personKeyboards.end()) {
+      return;
+    }
     auto entry = std::make_unique<PersonKeyListener>();
     entry->seat = this;
     entry->keyboard = keyboard;
     entry->listener.notify = onPersonKey;
     wl_signal_add(&keyboard->events.key, &entry->listener);
+    entry->destroy.notify = onPersonKeyboardDestroy;
+    wl_signal_add(&keyboard->base.events.destroy, &entry->destroy);
     m_personKeyboards.push_back(std::move(entry));
   }
 
-  void AgentSeat::onNewDevice(wl_listener* listener, void* data) {
-    AgentSeat* self;
-    self = wl_container_of(listener, self, m_newKeyboard);
-    auto* device = static_cast<wlr_input_device*>(data);
-    if (device->type == WLR_INPUT_DEVICE_KEYBOARD) {
-      self->watchKeyboard(wlr_keyboard_from_input_device(device));
+  void AgentSeat::onPersonKeyboardDestroy(wl_listener* listener, void* /*data*/) {
+    PersonKeyListener* entry;
+    entry = wl_container_of(listener, entry, destroy);
+    AgentSeat* seat = entry->seat;
+    wl_list_remove(&entry->listener.link);
+    wl_list_remove(&entry->destroy.link);
+    const auto found = std::ranges::find_if(seat->m_personKeyboards, [entry](const auto& candidate) {
+      return candidate.get() == entry;
+    });
+    if (found != seat->m_personKeyboards.end()) {
+      seat->m_personKeyboards.erase(found);
     }
   }
 

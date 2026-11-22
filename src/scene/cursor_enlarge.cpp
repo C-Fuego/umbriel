@@ -20,6 +20,7 @@ namespace umbriel {
   CursorEnlarge::CursorEnlarge(Server& server) : m_server(&server) { rebuildChairs(); }
 
   CursorEnlarge::~CursorEnlarge() {
+    unwatchSurface();
     if (m_timer != nullptr) {
       wl_event_source_remove(m_timer);
     }
@@ -46,7 +47,11 @@ namespace umbriel {
     if (m_manager != nullptr) {
       wlr_xcursor_manager_destroy(m_manager);
     }
-    m_manager = wlr_xcursor_manager_create(settings.theme.empty() ? nullptr : settings.theme.c_str(), settings.size);
+    // Asking the theme for a bigger cursor beats scaling a small one up: the
+    // grown image is the shape the theme draws, at the size the zoom asks for.
+    const int grownSize =
+        std::max(1, static_cast<int>(std::lround(static_cast<double>(settings.size) * settings.zoomFactor)));
+    m_manager = wlr_xcursor_manager_create(settings.theme.empty() ? nullptr : settings.theme.c_str(), grownSize);
     if (m_manager == nullptr) {
       return;
     }
@@ -111,6 +116,7 @@ namespace umbriel {
 
   void CursorEnlarge::setXcursor(const char* name) {
     m_shape = name != nullptr ? name : kDefaultShape;
+    unwatchSurface();
     m_surface = nullptr;
     m_hotspotX = 0;
     m_hotspotY = 0;
@@ -120,6 +126,13 @@ namespace umbriel {
   }
 
   void CursorEnlarge::setSurface(wlr_surface* surface, int32_t hotspotX, int32_t hotspotY) {
+    if (surface != m_surface) {
+      if (surface != nullptr) {
+        watchSurface(surface);
+      } else {
+        unwatchSurface();
+      }
+    }
     m_surface = surface;
     m_hotspotX = hotspotX;
     m_hotspotY = hotspotY;
@@ -131,6 +144,11 @@ namespace umbriel {
   void CursorEnlarge::move(double x, double y) {
     m_x = x;
     m_y = y;
+    if (m_active) {
+      for (const std::unique_ptr<Chair>& chair : m_chairs) {
+        placeImage(*chair);
+      }
+    }
   }
 
   void CursorEnlarge::setHidden(bool hidden) {
@@ -178,17 +196,10 @@ namespace umbriel {
         wlr_scene_node_set_position(&chair.tree->node, layout.x, layout.y);
         chair.image = wlr_scene_buffer_create(chair.tree, nullptr);
         if (chair.image != nullptr) {
+          chair.image->point_accepts_input = [](wlr_scene_buffer*, double*, double*) -> bool { return false; };
           wlr_scene_node_set_enabled(&chair.image->node, false);
         }
       }
-    }
-    // An Xcursor image is drawn by a software cursor, which needs a seat. One
-    // without capabilities takes nothing from the real pointer, and a cursor
-    // with no surface commits an empty one until it is enlarged.
-    wlr_seat_create(m_server->display(), wlrOutput->name);
-    chair.cursor = wlr_cursor_create();
-    if (chair.cursor != nullptr) {
-      wlr_cursor_set_surface(chair.cursor, nullptr, 0, 0);
     }
     chair.owner = this;
     chair.destroy.notify = onOutputDestroy;
@@ -207,14 +218,9 @@ namespace umbriel {
 
   void CursorEnlarge::releaseChairs() {
     for (const std::unique_ptr<Chair>& chair : m_chairs) {
-      detachSurface(*chair);
       if (chair->destroy.link.next != nullptr) {
         wl_list_remove(&chair->destroy.link);
         chair->destroy.link.next = nullptr;
-      }
-      if (chair->cursor != nullptr) {
-        wlr_cursor_destroy(chair->cursor);
-        chair->cursor = nullptr;
       }
       if (chair->tree != nullptr) {
         wlr_scene_node_destroy(&chair->tree->node);
@@ -226,72 +232,89 @@ namespace umbriel {
     m_active = false;
   }
 
-  void CursorEnlarge::detachSurface(Chair& chair) {
-    if (chair.surfaceCommit.link.next != nullptr) {
-      wl_list_remove(&chair.surfaceCommit.link);
-      chair.surfaceCommit.link.next = nullptr;
+  void CursorEnlarge::watchSurface(wlr_surface* surface) {
+    unwatchSurface();
+    m_surfaceCommit.notify = onSurfaceCommit;
+    wl_signal_add(&surface->events.commit, &m_surfaceCommit);
+    m_surfaceDestroy.notify = onSurfaceDestroy;
+    wl_signal_add(&surface->events.destroy, &m_surfaceDestroy);
+  }
+
+  void CursorEnlarge::unwatchSurface() {
+    if (m_surfaceCommit.link.next != nullptr) {
+      wl_list_remove(&m_surfaceCommit.link);
+      m_surfaceCommit.link.next = nullptr;
     }
-    if (chair.surfaceDestroy.link.next != nullptr) {
-      wl_list_remove(&chair.surfaceDestroy.link);
-      chair.surfaceDestroy.link.next = nullptr;
+    if (m_surfaceDestroy.link.next != nullptr) {
+      wl_list_remove(&m_surfaceDestroy.link);
+      m_surfaceDestroy.link.next = nullptr;
     }
-    chair.surface = nullptr;
   }
 
   void CursorEnlarge::hideImage(Chair& chair) {
+    chair.destWidth = 0;
+    chair.destHeight = 0;
     if (chair.image != nullptr) {
       wlr_scene_node_set_enabled(&chair.image->node, false);
-    }
-    if (chair.cursor != nullptr) {
-      wlr_cursor_set_surface(chair.cursor, nullptr, 0, 0);
     }
   }
 
   void CursorEnlarge::applyImage(Chair& chair) {
     hideImage(chair);
-    if (!m_active || m_hidden || chair.cursor == nullptr) {
+    if (!m_active || m_hidden || chair.image == nullptr || chair.output == nullptr) {
       return;
     }
+    const double scale = std::max(1.0, static_cast<double>(chair.output->wlr()->scale));
+    // The grown image is drawn by the scene in both cases: a client's cursor
+    // surface as it is, and the theme's own image, copied out of the xcursor at
+    // the size the theme was asked for. A software cursor would be invisible on
+    // an output with no cursor plane, which is every headless one.
     if (m_surface != nullptr) {
       // A client that draws its own cursor image keeps it: the scene buffer
       // scales the very same surface, which no seat gets to see.
-      if (chair.surface != m_surface) {
-        detachSurface(chair);
-        chair.surface = m_surface;
-        chair.surfaceCommit.notify = onChairSurfaceCommit;
-        wl_signal_add(&m_surface->events.commit, &chair.surfaceCommit);
-        chair.surfaceDestroy.notify = onChairSurfaceDestroy;
-        wl_signal_add(&m_surface->events.destroy, &chair.surfaceDestroy);
+      if (m_surface->buffer == nullptr) {
+        return;
       }
-      if (chair.image != nullptr) {
-        wlr_scene_buffer_set_buffer(chair.image, &m_surface->buffer->base);
-      }
+      const wlr_buffer* buffer = &m_surface->buffer->base;
+      const double factor = m_zoom / scale;
+      chair.destWidth = static_cast<int>(std::lround(static_cast<double>(buffer->width) * factor));
+      chair.destHeight = static_cast<int>(std::lround(static_cast<double>(buffer->height) * factor));
+      chair.hotspotX = static_cast<double>(m_hotspotX);
+      chair.hotspotY = static_cast<double>(m_hotspotY);
+      wlr_scene_buffer_set_buffer(chair.image, &m_surface->buffer->base);
       placeImage(chair);
       return;
     }
-    detachSurface(chair);
-    if (m_manager != nullptr) {
-      wlr_cursor_set_xcursor(chair.cursor, m_manager, m_shape.c_str());
+    wlr_xcursor* xcursor =
+        m_manager != nullptr ? wlr_xcursor_manager_get_xcursor(m_manager, m_shape.c_str(), m_scale) : nullptr;
+    if (xcursor == nullptr || xcursor->image_count == 0) {
+      return;
     }
+    wlr_xcursor_image* image = xcursor->images[0];
+    // wlroots hands out the theme's own image as a buffer, which the scene keeps
+    // alive by its own lock.
+    wlr_buffer* buffer = wlr_xcursor_image_get_buffer(image);
+    if (buffer == nullptr) {
+      return;
+    }
+    chair.destWidth = static_cast<int>(std::lround(static_cast<double>(buffer->width) / scale));
+    chair.destHeight = static_cast<int>(std::lround(static_cast<double>(buffer->height) / scale));
+    chair.hotspotX = static_cast<double>(image->hotspot_x) / scale;
+    chair.hotspotY = static_cast<double>(image->hotspot_y) / scale;
+    wlr_scene_buffer_set_buffer(chair.image, buffer);
+    placeImage(chair);
   }
 
   void CursorEnlarge::placeImage(Chair& chair) {
     if (chair.image == nullptr || chair.output == nullptr) {
       return;
     }
-    wlr_buffer* buffer =
-        chair.surface != nullptr && chair.surface->buffer != nullptr ? &chair.surface->buffer->base : nullptr;
-    if (buffer == nullptr) {
-      wlr_scene_node_set_enabled(&chair.image->node, false);
-      return;
-    }
-    // The buffer is in device pixels, the scene draws in logical ones: the
-    // grown size is the image times the factor, less the device scale.
-    const double scale = std::max(1.0, static_cast<double>(chair.output->wlr()->scale));
-    const double factor = m_zoom / scale;
-    const double left = m_x - static_cast<double>(m_hotspotX);
-    const double top = m_y - static_cast<double>(m_hotspotY);
-    const bool visible = m_x >= chair.originX
+    const bool visible = m_active
+        && !m_hidden
+        && (m_surface == nullptr || m_surface->buffer != nullptr)
+        && chair.destWidth > 0
+        && chair.destHeight > 0
+        && m_x >= chair.originX
         && m_y >= chair.originY
         && m_x < chair.originX + chair.width
         && m_y < chair.originY + chair.height;
@@ -299,13 +322,12 @@ namespace umbriel {
     if (!visible) {
       return;
     }
-    wlr_scene_buffer_set_dest_size(
-        chair.image, static_cast<int>(std::lround(static_cast<double>(buffer->width) * factor)),
-        static_cast<int>(std::lround(static_cast<double>(buffer->height) * factor))
-    );
+    // The image is drawn at the size the zoom asks for, and set back from the
+    // pointer by its own hotspot so the shape covers what the real cursor does.
+    wlr_scene_buffer_set_dest_size(chair.image, chair.destWidth, chair.destHeight);
     wlr_scene_node_set_position(
-        &chair.image->node, static_cast<int>(std::lround(left)) - chair.originX,
-        static_cast<int>(std::lround(top)) - chair.originY
+        &chair.image->node, static_cast<int>(std::lround(m_x - chair.hotspotX)) - chair.originX,
+        static_cast<int>(std::lround(m_y - chair.hotspotY)) - chair.originY
     );
   }
 
@@ -313,28 +335,28 @@ namespace umbriel {
     Chair* chair;
     chair = wl_container_of(listener, chair, destroy);
     chair->output = nullptr;
+    wl_list_remove(&chair->destroy.link);
     chair->destroy.link.next = nullptr;
     chair->owner->hideImage(*chair);
-    chair->owner->detachSurface(*chair);
   }
 
-  void CursorEnlarge::onChairSurfaceCommit(wl_listener* listener, void* /*data*/) {
-    Chair* chair;
-    chair = wl_container_of(listener, chair, surfaceCommit);
-    if (chair->image == nullptr || chair->surface == nullptr || chair->surface->buffer == nullptr) {
-      return;
+  void CursorEnlarge::onSurfaceCommit(wl_listener* listener, void* /*data*/) {
+    CursorEnlarge* self;
+    self = wl_container_of(listener, self, m_surfaceCommit);
+    // The client drew its cursor again: every chair shows the new buffer at the
+    // size the zoom asks for.
+    self->applyCursorImage();
+  }
+
+  void CursorEnlarge::onSurfaceDestroy(wl_listener* listener, void* /*data*/) {
+    CursorEnlarge* self;
+    self = wl_container_of(listener, self, m_surfaceDestroy);
+    self->unwatchSurface();
+    self->m_surface = nullptr;
+    // Nothing is left to grow: the theme's shape takes over on the next move.
+    for (const std::unique_ptr<Chair>& chair : self->m_chairs) {
+      self->hideImage(*chair);
     }
-    wlr_scene_buffer_set_buffer(chair->image, &chair->surface->buffer->base);
-    chair->owner->placeImage(*chair);
-  }
-
-  void CursorEnlarge::onChairSurfaceDestroy(wl_listener* listener, void* /*data*/) {
-    Chair* chair;
-    chair = wl_container_of(listener, chair, surfaceDestroy);
-    chair->surfaceCommit.link.next = nullptr;
-    chair->surfaceDestroy.link.next = nullptr;
-    chair->surface = nullptr;
-    chair->owner->hideImage(*chair);
   }
 
 } // namespace umbriel
