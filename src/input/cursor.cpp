@@ -160,6 +160,16 @@ namespace umbriel {
       return true;
     }
 
+    // The workspace a drag drops `view` into: a scratchpad window's own, wherever the pointer is, else the active
+    // workspace of the pointer's output.
+    Workspace* dropWorkspace(Server& server, View& view, Output* output) {
+      if (const ScratchpadManager* scratchpad = server.scratchpadManager();
+          scratchpad != nullptr && scratchpad->contains(&view)) {
+        return view.workspace();
+      }
+      return output != nullptr && output->workspaceGroup() != nullptr ? output->workspaceGroup()->active() : nullptr;
+    }
+
   } // namespace
 
   Cursor::Cursor(Server& server) : m_server(&server) {
@@ -1194,10 +1204,8 @@ namespace umbriel {
     }
     bool tiled = view->tiled();
     if (ScratchpadManager* scratchpad = m_server->scratchpadManager();
-        scratchpad != nullptr && scratchpad->contains(view)) {
+        scratchpad != nullptr && !tiled && scratchpad->contains(view)) {
       view->restoreMaximizedForMove();
-      view->setFloating(true);
-      tiled = false;
     }
 
     if (!tiled && (view->region() || view->floatingMaximized())) {
@@ -1289,11 +1297,6 @@ namespace umbriel {
       resetMode();
     }
     bool tiled = view->tiled();
-    if (ScratchpadManager* scratchpad = m_server->scratchpadManager();
-        scratchpad != nullptr && !view->attached() && scratchpad->contains(view)) {
-      view->setFloating(true);
-      tiled = false;
-    }
 
     if (tiled) {
       Workspace* workspace = view->workspace();
@@ -2204,7 +2207,12 @@ namespace umbriel {
       } else if (surface == nullptr || wlr_xwayland_surface_try_from_wlr_surface(surface) == nullptr) {
         // A press on an override-redirect X11 menu leaves the keyboard with the menu.
         wlr_output* wlrOutput = wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y);
-        m_server->refocusExplicit(m_server->outputFromWlr(wlrOutput));
+        Output* output = m_server->outputFromWlr(wlrOutput);
+        // A press on a modal scratchpad's backdrop dismisses it.
+        if (ScratchpadManager* pad = m_server->scratchpadManager(); pad != nullptr && pad->modalOn(output)) {
+          pad->dismissOn(output);
+        }
+        m_server->refocusExplicit(output);
       }
     }
   }
@@ -3255,7 +3263,10 @@ namespace umbriel {
       return;
     }
 
-    Workspace* workspace = output->workspaceGroup()->active();
+    Workspace* workspace = dropWorkspace(*m_server, *grab->view, output);
+    if (workspace == nullptr) {
+      return;
+    }
     grab->drop = computeDropTarget(
         *workspace, m_cursor->x, m_cursor->y, grab->view,
         DropTargetOptions{
@@ -3316,7 +3327,7 @@ namespace umbriel {
       clearDropZonePreview();
       return;
     }
-    const Workspace* workspace = output->workspaceGroup()->active();
+    const Workspace* workspace = dropWorkspace(*m_server, *grab->view, output);
     if (workspace == nullptr || !workspace->layoutConfig().stacking.dropZones || !grab->view->canSetRegion(workspace)) {
       clearDropZonePreview();
       return;
@@ -3399,7 +3410,7 @@ namespace umbriel {
     // into the layout rather than staying detached.
     Output* destination =
         m_server->outputFromWlr(wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y));
-    Workspace* workspace = destination != nullptr ? destination->workspaceGroup()->active() : nullptr;
+    Workspace* workspace = dropWorkspace(*m_server, *view, destination);
     if (grab->target == DragTarget::Tiled && workspace != nullptr && workspace->layoutMode() == LayoutMode::Stacking) {
       view->floatForStackingLayout();
     } else {
