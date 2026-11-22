@@ -1120,6 +1120,20 @@ namespace umbriel {
       bool operator==(const ScreenCast&) const = default;
     } screenCast;
 
+    struct Agent {
+      // Keep the agent seat from existing. The seat is what lets a program drive
+      // the desktop through `umbriel agent ...`: a second seat of its own, with
+      // its own pointer and keyboard, that no other client can see. Read at
+      // startup and on reload; turning it off takes the seat away.
+      bool off = false;
+      // Give the agent its own virtual output instead of letting it work on the
+      // outputs the person is looking at. A window taken on the agent's output
+      // stays off the person's screens, but clients that only draw when mapped
+      // still draw there. Empty = use the person's outputs.
+      std::string output;
+      bool operator==(const Agent&) const = default;
+    } agent;
+
     struct General {
       std::vector<std::string> autostart;
       // Symbolic `Mod` in keybinds. Unset preserves the runtime default:
@@ -1253,6 +1267,14 @@ namespace umbriel {
         int hideTimeoutMs = 0;
         // Hide the cursor while the touchscreen is used; pointer activity restores it.
         bool hideOnTouch = true;
+        // Shake the pointer to enlarge the cursor up to `zoomFactor` for a
+        // moment, so it is easy to find.
+        bool shakeToEnlarge = false;
+        double zoomFactor = 3.0;
+        // Pointer travel, in logical pixels, that counts as one shake.
+        int shakeThreshold = 2000;
+        // How long the enlarged cursor stays after the shaking stops.
+        int enlargeHoldMs = 1500;
         bool operator==(const Cursor&) const = default;
       } cursor;
 

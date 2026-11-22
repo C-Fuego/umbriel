@@ -1,5 +1,6 @@
 #include "server/ipc_commands.h"
 
+#include "agent/agent_seat.h"
 #include "config/change.h"
 #include "config/config.h"
 #include "config/overrides.h"
@@ -254,6 +255,39 @@ namespace umbriel {
           entry.value("w", 0), entry.value("h", 0), entry.value("x", 0), entry.value("y", 0), xdgTagSuffix,
           contentTypeSuffix, scratchpadSuffix, minimizedSuffix
       );
+    }
+
+    void printAgentState(const nlohmann::json& ok) {
+      if (!ok.value("on", false)) {
+        std::println("agent seat: off");
+        return;
+      }
+      const nlohmann::json& window = ok.at("window");
+      if (window.is_null()) {
+        std::println("agent seat: no window taken");
+      } else {
+        std::println(
+            "agent seat: {} \"{}\" [{}]{}{}", window.value("app_id", ""), window.value("title", ""),
+            window.value("id", ""), ok.value("taken_over", false) ? " [taken over]" : "",
+            window.value("visible", false) ? "" : " [hidden]"
+        );
+      }
+      if (!window.is_null() && window.contains("x")) {
+        std::println(
+            "  pointer at {},{} in a {}x{} window at {:+}{:+}", window.value("pointer_x", 0),
+            window.value("pointer_y", 0), window.value("w", 0), window.value("h", 0), window.value("x", 0),
+            window.value("y", 0)
+        );
+      }
+      for (const auto& entry : ok.value("windows", nlohmann::json::array())) {
+        if (window.is_null() || entry.value("id", "") != window.value("id", "")) {
+          printWindowRow(entry);
+        }
+      }
+    }
+
+    void printAgentGeometry(const nlohmann::json& ok) {
+      std::println("{},{} {}x{}", ok.value("x", 0), ok.value("y", 0), ok.value("width", 0), ok.value("height", 0));
     }
 
     void printWindows(const nlohmann::json& ok) {
@@ -1365,6 +1399,278 @@ namespace umbriel {
     return nlohmann::json{{"ok", nullptr}};
   }
 
+  namespace {
+    // The window looked up by the id the caller gave: the agent's own target when
+    // the argument is empty, otherwise the window that id names.
+    std::expected<View*, std::string> agentWindow(Server& server, std::string_view id) {
+      if (!id.empty()) {
+        for (const auto& view : server.views()) {
+          if (view->mapped() && view->extForeignIdentifier() != nullptr && id == view->extForeignIdentifier()) {
+            return view.get();
+          }
+        }
+        return std::unexpected("unknown window: " + std::string(id));
+      }
+      return std::unexpected("no window taken; take one first");
+    }
+
+    // A number the caller wrote, or the default when it was omitted.
+    std::expected<double, std::string> numberArg(std::string_view text, std::string_view what) {
+      if (text.empty()) {
+        return std::unexpected("missing " + std::string(what));
+      }
+      try {
+        size_t consumed = 0;
+        const double value = std::stod(std::string(text), &consumed);
+        if (consumed != text.size()) {
+          return std::unexpected("not a number: " + std::string(text));
+        }
+        return value;
+      } catch (const std::exception&) {
+        return std::unexpected("not a number: " + std::string(text));
+      }
+    }
+  } // namespace
+
+  nlohmann::json IpcCommands::agentState(Server& server) {
+    AgentSeat* seat = server.agentSeat();
+    nlohmann::json state;
+    state["on"] = seat != nullptr;
+    if (seat == nullptr) {
+      state["off"] = !AgentSeat::enabled();
+      state["taken_over"] = false;
+      state["window"] = nullptr;
+      state["windows"] = nlohmann::json::array();
+      return state;
+    }
+    state["taken_over"] = seat->takenOver();
+    View* target = seat->target();
+    if (target == nullptr) {
+      state["window"] = nullptr;
+    } else {
+      PendingLayouts pendingLayouts;
+      state["window"] = windowEntry(server, *target, pendingLayouts);
+    }
+    // What the caller can choose from: every mapped window, minus the one the
+    // person is focused in, which taking would take from them.
+    nlohmann::json windows = nlohmann::json::array();
+    PendingLayouts pendingLayouts;
+    for (const auto& view : server.views()) {
+      if (!view->mapped()) {
+        continue;
+      }
+      nlohmann::json entry = windowEntry(server, *view, pendingLayouts);
+      windows.push_back(std::move(entry));
+    }
+    state["windows"] = std::move(windows);
+    return state;
+  }
+
+  nlohmann::json IpcCommands::agent(Server& server, IpcArgs /*args*/) {
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentTake(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.size() != 1 || args.front().empty()) {
+      return nlohmann::json{{"err", "usage: agent-take <window-id>"}};
+    }
+    auto view = agentWindow(server, args.front());
+    if (!view) {
+      return nlohmann::json{{"err", view.error()}};
+    }
+    std::string error;
+    if (!seat->take(**view, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentRelease(Server& server, IpcArgs /*args*/) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    seat->release();
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentPointer(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.size() != 2) {
+      return nlohmann::json{{"err", "usage: agent-pointer <x> <y>"}};
+    }
+    auto x = numberArg(args[0], "x");
+    auto y = numberArg(args[1], "y");
+    if (!x || !y) {
+      return nlohmann::json{{"err", x ? y.error() : x.error()}};
+    }
+    std::string error;
+    if (!seat->movePointer(*x, *y, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentClick(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.empty() || args.size() > 3) {
+      return nlohmann::json{{"err", "usage: agent-click <left|middle|right> [x y]"}};
+    }
+    uint32_t button = 0;
+    if (args[0] == "left") {
+      button = 1;
+    } else if (args[0] == "middle") {
+      button = 2;
+    } else if (args[0] == "right") {
+      button = 3;
+    } else {
+      return nlohmann::json{{"err", "unknown button: " + args[0] + " (use left, middle, or right)"}};
+    }
+    std::string error;
+    if (args.size() == 3) {
+      auto x = numberArg(args[1], "x");
+      auto y = numberArg(args[2], "y");
+      if (!x || !y) {
+        return nlohmann::json{{"err", x ? y.error() : x.error()}};
+      }
+      if (!seat->movePointer(*x, *y, &error)) {
+        return nlohmann::json{{"err", error}};
+      }
+    }
+    if (!seat->button(button, true, &error) || !seat->button(button, false, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentScroll(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.empty() || args.size() > 2) {
+      return nlohmann::json{{"err", "usage: agent-scroll <notches> [horizontal]"}};
+    }
+    auto notches = numberArg(args[0], "notches");
+    if (!notches) {
+      return nlohmann::json{{"err", notches.error()}};
+    }
+    const bool horizontal = args.size() == 2 && args[1] == "horizontal";
+    std::string error;
+    if (!seat->scroll(*notches, horizontal, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentKey(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.size() != 1) {
+      return nlohmann::json{{"err", "usage: agent-key <keycode>"}};
+    }
+    const auto keycode = static_cast<uint32_t>(std::strtoul(args[0].c_str(), nullptr, 10));
+    std::string error;
+    if (!seat->key(keycode, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentType(Server& server, IpcArgs args) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.empty()) {
+      return nlohmann::json{{"err", "usage: agent-type <text...>"}};
+    }
+    std::string text;
+    for (size_t index = 0; index < args.size(); ++index) {
+      if (index != 0) {
+        text.push_back(' ');
+      }
+      text += args[index];
+    }
+    std::string error;
+    if (!seat->type(text, &error)) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentCapture(Server& server, IpcArgs /*args*/) {
+    AgentSeat* seat = server.agentSeat();
+    if (seat == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    wlr_box box{};
+    if (!seat->geometry(&box)) {
+      return nlohmann::json{{"err", "no window taken; take one first"}};
+    }
+    return nlohmann::json{{"ok", {{"x", box.x}, {"y", box.y}, {"width", box.width}, {"height", box.height}}}};
+  }
+
+  nlohmann::json IpcCommands::agentAct(Server& server, IpcArgs args) {
+    if (server.agentSeat() == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.empty()) {
+      return nlohmann::json{{"err", "usage: agent-act <action> [key=value...]"}};
+    }
+    nlohmann::json request{{"cmd", "action"}, {"action", args.front()}};
+    for (size_t index = 1; index < args.size(); ++index) {
+      const std::string& word = args[index];
+      const size_t equals = word.find('=');
+      if (equals == std::string::npos) {
+        return nlohmann::json{{"err", "action argument must be key=value: " + word}};
+      }
+      request[word.substr(0, equals)] = word.substr(equals + 1);
+    }
+    std::string error;
+    const std::optional<Keybind> bind = actionFromRequest(request, error);
+    if (!bind) {
+      return nlohmann::json{{"err", error}};
+    }
+    server.executeAction(*bind, &error);
+    if (!error.empty()) {
+      return nlohmann::json{{"err", error}};
+    }
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
+  nlohmann::json IpcCommands::agentSpawn(Server& server, IpcArgs args) {
+    if (server.agentSeat() == nullptr) {
+      return nlohmann::json{{"err", "the agent seat is off"}};
+    }
+    if (args.empty()) {
+      return nlohmann::json{{"err", "usage: agent-spawn <command...>"}};
+    }
+    std::string command;
+    for (size_t index = 0; index < args.size(); ++index) {
+      if (index != 0) {
+        command.push_back(' ');
+      }
+      command += args[index];
+    }
+    // The launch token is what lets the new window be known to be this spawn's
+    // rather than one the person happened to start at the same moment.
+    server.spawn(command.c_str(), nullptr, true);
+    return nlohmann::json{{"ok", agentState(server)}};
+  }
+
   nlohmann::json IpcCommands::outputCreate(Server& server, IpcArgs args) {
     std::string name;
     std::optional<OutputMode> mode;
@@ -1671,6 +1977,28 @@ namespace umbriel {
        &IpcCommands::inputCapturePermissions, nullptr},
       {"input-capture-revoke", "<id|all>", "forget capture permission and stop sessions using it",
        IpcCommandGroup::Control, true, &IpcCommands::inputCaptureRevoke, nullptr},
+      {"agent", "", "show the agent seat: taken window, windows to choose from, and where the pointer is",
+       IpcCommandGroup::Inspect, false, &IpcCommands::agent, &printAgentState},
+      {"agent-take", "<window-id>", "take a window on the agent seat so agent input reaches it",
+       IpcCommandGroup::Control, true, &IpcCommands::agentTake, &printAgentState},
+      {"agent-release", "", "let go of the agent's window", IpcCommandGroup::Control, false, &IpcCommands::agentRelease,
+       &printAgentState},
+      {"agent-capture", "", "the taken window's position and size, for a screenshot region", IpcCommandGroup::Inspect,
+       false, &IpcCommands::agentCapture, &printAgentGeometry},
+      {"agent-pointer", "<x> <y>", "move the agent's pointer inside the taken window", IpcCommandGroup::Control, true,
+       &IpcCommands::agentPointer, &printAgentState},
+      {"agent-click", "<left|middle|right> [x y]", "click the agent's pointer, optionally after moving it",
+       IpcCommandGroup::Control, true, &IpcCommands::agentClick, &printAgentState},
+      {"agent-scroll", "<notches> [horizontal]", "turn the agent's scroll wheel", IpcCommandGroup::Control, true,
+       &IpcCommands::agentScroll, &printAgentState},
+      {"agent-key", "<keycode>", "press and release one key by evdev keycode", IpcCommandGroup::Control, true,
+       &IpcCommands::agentKey, &printAgentState},
+      {"agent-type", "<text...>", "type text on the agent's keyboard", IpcCommandGroup::Control, true,
+       &IpcCommands::agentType, &printAgentState},
+      {"agent-act", "<action> [key=value...]", "run a compositor action for the agent, as `action` would",
+       IpcCommandGroup::Control, true, &IpcCommands::agentAct, &printAgentState},
+      {"agent-spawn", "<command...>", "launch a program with a launch token so its window can be found",
+       IpcCommandGroup::Control, true, &IpcCommands::agentSpawn, &printAgentState},
       {"output-create", "<name> [mode]", "create a virtual output (optional mode, as 1920x1080@60)",
        IpcCommandGroup::Control, true, &IpcCommands::outputCreate, &printOutputName},
       {"output-destroy", "<name>", "destroy a virtual output", IpcCommandGroup::Control, true,

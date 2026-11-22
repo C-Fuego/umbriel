@@ -601,6 +601,11 @@ namespace umbriel {
       shortcuts->forgetSource(this);
     }
     m_server->removeKeyboard(this);
+    if (m_virtual) {
+      // A virtual keyboard is the agent's, made and owned by AgentSeat. It
+      // has no client to disconnect on its own, so the seat asks for this.
+      m_server->agentKeyboardDestroyed();
+    }
   }
 
   void Keyboard::armRepeat(const Keybind& bind, uint32_t keycode) {

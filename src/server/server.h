@@ -164,6 +164,8 @@ namespace umbriel {
   class ScratchpadManager;
   class ConfigBanner;
   class Cheatsheet;
+  class CursorEnlarge;
+  class AgentSeat;
   class QuitConfirm;
   class Ipc;
 
@@ -223,6 +225,7 @@ namespace umbriel {
     ConfigBanner* configBanner() const { return m_configBanner.get(); }
     Cheatsheet* cheatsheet() const { return m_cheatsheet.get(); }
     QuitConfirm* quitConfirm() const { return m_quitConfirm.get(); }
+    CursorEnlarge* cursorEnlarge() const { return m_cursorEnlarge.get(); }
     // Above xdg windows, below layer-shell top/overlay (drag/drop insert hint).
     wlr_scene_tree* dragTree() const { return m_dragTree; }
     // Parent for wl_data_device drag icons; moved to the cursor while a drag is active.
@@ -326,6 +329,26 @@ namespace umbriel {
     wlr_relative_pointer_manager_v1* relativePointerManager() const { return m_relativePointerManager; }
     wlr_pointer_gestures_v1* pointerGestures() const { return m_pointerGestures; }
     wlr_virtual_pointer_manager_v1* virtualPointerManager() const { return m_virtualPointerManager; }
+    wlr_virtual_keyboard_manager_v1* virtualKeyboardManager() const { return m_virtualKeyboardManager; }
+    AgentSeat* agentSeat() const { return m_agentSeat.get(); }
+    // A virtual pointer and keyboard for the agent seat's use, the same devices
+    // a client sending zwp_virtual_pointer_v1 / zwp_virtual_keyboard_v1 gets. They
+    // are not attached to the person's cursor or keyboard list. The caller owns
+    // them and gives them back with destroyAgentDevices().
+    std::unique_ptr<wlr_virtual_pointer_v1, void (*)(wlr_virtual_pointer_v1*)> makeVirtualPointer();
+    std::unique_ptr<wlr_virtual_keyboard_v1, void (*)(wlr_virtual_keyboard_v1*)> makeVirtualKeyboard();
+    static void destroyVirtualPointerDevice(wlr_virtual_pointer_v1* device);
+    static void destroyVirtualKeyboardDevice(wlr_virtual_keyboard_v1* device);
+    // Tears the agent seat's virtual devices down. Called by the agent seat when
+    // it lets go of them.
+    void destroyAgentDevices(wlr_virtual_pointer_v1* pointer, wlr_virtual_keyboard_v1* keyboard);
+    // True while m_agentKeyboardClaimed is set: onNewVirtualKeyboard hands the
+    // device to the agent seat instead of registering it on the person's seat.
+    bool agentKeyboardClaimed() const { return m_agentKeyboardClaimed; }
+    void releaseAgentKeyboardClaim() { m_agentKeyboardClaimed = false; }
+    // Called by Keyboard::handleDestroy() for a virtual keyboard: the agent
+    // seat made that device and wants to know when it is gone.
+    void agentKeyboardDestroyed();
     wlr_tablet_manager_v2* tabletManager() const { return m_tabletManager; }
     Gestures* gestures() const { return m_gestures.get(); }
     bool nested() const { return m_nested; }
@@ -335,6 +358,7 @@ namespace umbriel {
     // Read-only iteration over the registries. These replace the friend list: callers can walk the registry without
     // reaching into Server's internals or being able to add to and remove from it.
     std::span<const std::unique_ptr<Output>> outputs() const { return m_outputs; }
+    std::span<const std::unique_ptr<Keyboard>> keyboards() const { return m_keyboards; }
     std::span<const std::unique_ptr<View>> views() const { return m_registry.all(); }
     ViewRegistry& registry() { return m_registry; }
     std::span<const std::unique_ptr<LayerSurface>> layerSurfaces() const { return m_layerSurfaces; }
@@ -949,6 +973,8 @@ namespace umbriel {
     std::unique_ptr<Cheatsheet> m_cheatsheet;
     wlr_scene_tree* m_quitConfirmTree = nullptr;
     std::unique_ptr<QuitConfirm> m_quitConfirm;
+    std::unique_ptr<CursorEnlarge> m_cursorEnlarge;
+    std::unique_ptr<AgentSeat> m_agentSeat;
 
     bool m_nested = false;
     bool m_stopping = false;
@@ -1058,6 +1084,9 @@ namespace umbriel {
     LidStateCoordinator m_lidState;
     std::vector<std::unique_ptr<SwitchDevice>> m_switchDevices;
     std::vector<std::unique_ptr<VirtualPointerDevice>> m_virtualPointers;
+    // Set by the agent seat just before it makes its own virtual keyboard, so
+    // the server does not register that device on the person's seat.
+    bool m_agentKeyboardClaimed = false;
     // Output-management choices are session state. Preserve them across
     // backend object recreation, without transferring a choice between
     // different identified monitors. An output-policy config reload clears

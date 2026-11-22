@@ -1,5 +1,6 @@
 #include "server/server.h"
 
+#include "agent/agent_seat.h"
 #include "config/config.h"
 #include "config/config_diag.h"
 #include "config/config_watcher.h"
@@ -25,6 +26,7 @@
 #include "scene/cheatsheet.h"
 #include "scene/color.h"
 #include "scene/config_banner.h"
+#include "scene/cursor_enlarge.h"
 #include "scene/effect_registry.h"
 #include "scene/hint_rect.h"
 #include "scene/quit_confirm.h"
@@ -1436,6 +1438,16 @@ namespace umbriel {
       m_cheatsheet->showOnStartup();
     }
     m_quitConfirm = std::make_unique<QuitConfirm>(*this, m_quitConfirmTree);
+    m_cursorEnlarge = std::make_unique<CursorEnlarge>(*this);
+    // The agent seat is created only to be handed out; it never sees input a
+    // person did not give it. `[agent] off` keeps it from existing at all.
+    // The seat exists for the session, or not at all: a seat is registered with
+    // clients when it is created, so `[agent] off` is read here as a boot
+    // setting. Reloading it later only makes the requests refuse.
+    if (AgentSeat::enabled()) {
+      m_agentSeat = std::make_unique<AgentSeat>(*this);
+      m_agentSeat->createOutput();
+    }
     if (!notifyServiceReady(notifySocket)) {
       kLog.error("failed to report session readiness: {}", std::strerror(errno));
       return false;

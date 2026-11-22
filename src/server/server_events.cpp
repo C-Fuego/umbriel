@@ -1,3 +1,4 @@
+#include "agent/agent_seat.h"
 #include "config/change.h"
 #include "config/config.h"
 #include "config/config_watcher.h"
@@ -1423,6 +1424,11 @@ namespace umbriel {
     Server* self;
     self = wl_container_of(listener, self, m_newVirtualKeyboard);
     auto* keyboard = static_cast<wlr_virtual_keyboard_v1*>(data);
+    if (self->agentKeyboardClaimed()) {
+      // The agent seat's keyboard types on the agent seat, never on the person's.
+      self->releaseAgentKeyboardClaim();
+      return;
+    }
     if (keyboard->keyboard.keymap != nullptr) {
       self->addKeyboard(&keyboard->keyboard.base);
       self->updateSeatCapabilities();
@@ -1478,6 +1484,7 @@ namespace umbriel {
     device->server = self;
     device->vpointer = vpointer;
     device->destroy.notify = onVirtualPointerDestroy;
+
     wl_resource_add_destroy_listener(vpointer->resource, &device->destroy);
 
     // Attach to the cursor exactly like a physical pointer (see addPointer), so a virtual pointer runs the same Cursor
@@ -2259,6 +2266,73 @@ namespace umbriel {
     notifyKeyboardLayoutIpc();
   }
 
+  namespace {
+    // Virtual devices made by the compositor itself rather than by a client. They
+    // are input devices for wlr_seat's purposes and carry events like any other;
+    // nothing on the other end owns them but the agent seat.
+    const wlr_pointer_impl kAgentPointerImpl = {.name = "agent-pointer"};
+    const wlr_keyboard_impl kAgentKeyboardImpl = {.name = "agent-keyboard", .led_update = nullptr};
+  } // namespace
+
+  void Server::destroyVirtualPointerDevice(wlr_virtual_pointer_v1* device) {
+    if (device == nullptr) {
+      return;
+    }
+    wl_list_remove(&device->link);
+    wlr_pointer_finish(&device->pointer);
+    delete device;
+  }
+
+  void Server::destroyVirtualKeyboardDevice(wlr_virtual_keyboard_v1* device) {
+    if (device == nullptr) {
+      return;
+    }
+    wl_list_remove(&device->link);
+    wlr_keyboard_finish(&device->keyboard);
+    delete device;
+  }
+
+  std::unique_ptr<wlr_virtual_pointer_v1, void (*)(wlr_virtual_pointer_v1*)> Server::makeVirtualPointer() {
+    auto device = std::unique_ptr<wlr_virtual_pointer_v1, void (*)(wlr_virtual_pointer_v1*)>(
+        new wlr_virtual_pointer_v1{}, &destroyVirtualPointerDevice
+    );
+    // wlroots' own way of making one is private to the protocol handler; this is
+    // the same three steps: initialize the device, give it a way to carry events,
+    // and add it to the manager's list so it is torn down with the manager.
+    wlr_pointer_init(&device->pointer, &kAgentPointerImpl, "agent-pointer");
+    device->pointer.base.data = device.get();
+    wl_list_insert(m_virtualPointerManager->virtual_pointers.prev, &device->link);
+    return device;
+  }
+
+  std::unique_ptr<wlr_virtual_keyboard_v1, void (*)(wlr_virtual_keyboard_v1*)> Server::makeVirtualKeyboard() {
+    auto device = std::unique_ptr<wlr_virtual_keyboard_v1, void (*)(wlr_virtual_keyboard_v1*)>(
+        new wlr_virtual_keyboard_v1{}, &destroyVirtualKeyboardDevice
+    );
+    wlr_keyboard_init(&device->keyboard, &kAgentKeyboardImpl, "agent-keyboard");
+    device->keyboard.base.data = device.get();
+    wl_list_insert(m_virtualKeyboardManager->virtual_keyboards.prev, &device->link);
+    // The agent seat's keyboard: onNewVirtualKeyboard must not put it on the
+    // person's seat, and the device has no keymap yet, so nothing is sent
+    // through it until the agent seat sets one.
+    m_agentKeyboardClaimed = true;
+    wl_signal_emit_mutable(&m_virtualKeyboardManager->events.new_virtual_keyboard, device.get());
+    return device;
+  }
+
+  void Server::destroyAgentDevices(wlr_virtual_pointer_v1* pointer, wlr_virtual_keyboard_v1* keyboard) {
+    // The agent seat's devices have no client behind them and were never
+    // registered with wlroots as input devices, so they are freed here.
+    destroyVirtualPointerDevice(pointer);
+    destroyVirtualKeyboardDevice(keyboard);
+  }
+
+  void Server::agentKeyboardDestroyed() {
+    if (m_agentSeat != nullptr) {
+      m_agentSeat->keyboardDestroyed();
+    }
+  }
+
   std::optional<Server::KeyboardLayoutState> Server::keyboardLayoutState() const {
     const Keyboard* source = m_keyboardLayoutSource;
     auto usable = [](const Keyboard* keyboard) {
@@ -2767,6 +2841,9 @@ namespace umbriel {
   void Server::removeOutput(Output* output) {
     const bool hadRuntimeEffect = output->screenEffectSlot().runtimeSelector.has_value();
     m_overview->onOutputRemoved(output);
+    if (m_agentSeat != nullptr) {
+      m_agentSeat->handleOutputRemoved(output->wlr());
+    }
     m_gestures->cancelForOutput(output);
     if (!m_cursor->isPassthrough()) {
       m_cursor->resetMode();

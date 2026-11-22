@@ -60,6 +60,15 @@ files = []
 # [screencast]
 # disable_dynamic_confirmation = true
 
+# A second seat for a program driving one window, apart from yours: its own
+# pointer and keyboard focus. `off` keeps the seat from existing. `output` names
+# a virtual output the agent works on, so taken windows never appear on yours.
+# https://docs.noctalia.dev/umbriel/automation/
+#
+# [agent]
+# off = false
+# output = "AGENT-1"
+
 # ==============================================================================
 # Outputs
 # Outputs are machine-specific. Run `umbriel outputs` to find names and modes.
@@ -176,6 +185,14 @@ numlock_toggle = true
 # [input.touch]
 # enabled = true
 # map_to_output = "eDP-1"
+
+# Shake the pointer to grow the cursor, so it is easy to find again.
+#
+# [input.cursor]
+# shake_to_enlarge = true
+# enlarge_zoom = 3.0 # 1.0 to 10.0
+# enlarge_threshold = 2000 # Pointer travel a shake needs, 100 to 20000.
+# enlarge_hold_ms = 1500 # How long it stays; 0 holds it until a click.
 
 # ==============================================================================
 # Global shortcut overrides use exact application and shortcut IDs.

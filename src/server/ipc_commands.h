@@ -38,6 +38,22 @@ namespace umbriel {
     static nlohmann::json outputs(Server& server, IpcArgs args);
     static nlohmann::json color(Server& server, IpcArgs args);
     static nlohmann::json tearing(Server& server, IpcArgs args);
+    // The agent seat: a second seat for a program driving the desktop.
+    static nlohmann::json agent(Server& server, IpcArgs args);
+    static nlohmann::json agentTake(Server& server, IpcArgs args);
+    static nlohmann::json agentRelease(Server& server, IpcArgs args);
+    static nlohmann::json agentCapture(Server& server, IpcArgs args);
+    static nlohmann::json agentPointer(Server& server, IpcArgs args);
+    static nlohmann::json agentClick(Server& server, IpcArgs args);
+    static nlohmann::json agentScroll(Server& server, IpcArgs args);
+    static nlohmann::json agentKey(Server& server, IpcArgs args);
+    static nlohmann::json agentType(Server& server, IpcArgs args);
+    static nlohmann::json agentAct(Server& server, IpcArgs args);
+    static nlohmann::json agentSpawn(Server& server, IpcArgs args);
+    // The reply every agent request carries: the seat's state, the window it
+    // holds, and where the pointer is, so a caller can act on a reading rather
+    // than a guess.
+    static nlohmann::json agentState(Server& server);
     // Runs a structured action request ({"cmd":"action", ...}); see server/action_request.h.
     static nlohmann::json action(Server& server, const nlohmann::json& request);
     static nlohmann::json outputCreate(Server& server, IpcArgs args);

@@ -24,6 +24,7 @@ Umbriel reloads most configuration changes when you save the file. Errors and wa
 - Configurable keybinds, gestures, window rules, blur, shadows, animations, and [effects](effects.md)
 - X11 application support through Xwayland
 - Local [IPC](ipc.md) for scripts, panels, and runtime inspection
+- An [agent seat](automation.md) for programs that drive one window: its own pointer and keyboard, kept apart from the person's
 
 ## Help and contributing
 

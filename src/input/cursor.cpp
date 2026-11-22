@@ -16,6 +16,7 @@
 #include "output/output.h"
 #include "overview/overview.h"
 #include "scene/cheatsheet.h"
+#include "scene/cursor_enlarge.h"
 #include "scene/hint_rect.h"
 #include "scene/quit_confirm.h"
 #include "scene/ssd_frame.h"
@@ -49,6 +50,18 @@ namespace umbriel {
     // pair up, so no grab may run and drop the layout's maximize bookkeeping.
     constexpr uint32_t kDoubleClickMsec = 300;
     constexpr double kDoubleClickSlop = 8.0;
+    // Pointer travel between two events past this is a jump, not a shake: an output crossing or a warp.
+    constexpr double kShakeMaxStep = 200.0;
+
+    // The device pixel ratio the enlarged cursor is rendered at. A whole number keeps an Xcursor image from being
+    // blurred into several device pixels per texel, so the largest output scale the pointer can reach decides it.
+    double enlargementScale(Server& server) {
+      double scale = 1.0;
+      for (const std::unique_ptr<Output>& output : server.outputs()) {
+        scale = std::max(scale, std::floor(static_cast<double>(output->wlr()->scale)));
+      }
+      return scale;
+    }
 
     // Panels (top/overlay) keep working inside the overview. Background- and bottom-layer surfaces are part of the
     // inert backdrop behind the filmstrip, so their clicks belong to the overview instead.
@@ -257,6 +270,17 @@ namespace umbriel {
     updateHideTimer();
     cancelHotCorner();
     updateHotCorner();
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->setScale(enlargementScale(*m_server));
+      if (!configured.shakeToEnlarge) {
+        enlarge->dismiss();
+        m_shakeTravel = 0;
+      }
+    }
+    // A shake in progress must not carry over to a new scale or threshold.
+    m_shakeTravel = 0;
+    m_shakeSeeded = false;
+    m_shakeBackward = false;
     if (configured.theme == m_xcursorTheme && configured.size == m_xcursorSize) {
       return;
     }
@@ -301,6 +325,7 @@ namespace umbriel {
   }
 
   void Cursor::noteActivity() {
+    noteShake();
     if (InputCapture* capture = m_server->inputCapture(); capture != nullptr && (capture->capabilities() & 2U) != 0) {
       return;
     }
@@ -312,6 +337,9 @@ namespace umbriel {
       } else {
         restoreClientCursor();
       }
+    }
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->setHidden(false);
     }
     updateHideTimer();
   }
@@ -335,6 +363,9 @@ namespace umbriel {
           setXcursor(m_compositorCursorName.c_str());
         } else {
           restoreClientCursor();
+        }
+        if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+          enlarge->setHidden(false);
         }
       }
       return;
@@ -361,6 +392,67 @@ namespace umbriel {
     m_cursorHidden = true;
     forwardEffectPointer();
     wlr_cursor_set_surface(m_cursor, nullptr, 0, 0);
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->setHidden(true);
+    }
+  }
+
+  void Cursor::noteShake() {
+    const Config::Input::Cursor& settings = config().input.cursor;
+    const double x = m_cursor->x;
+    const double y = m_cursor->y;
+    if (!settings.shakeToEnlarge) {
+      if (m_shakeTravel != 0) {
+        m_shakeTravel = 0;
+      }
+      return;
+    }
+    if (!m_shakeSeeded) {
+      m_shakeSeeded = true;
+      m_shakeX = x;
+      m_shakeY = y;
+      return;
+    }
+
+    // Pointer events do not carry a timestamp here, so a shake is any run of
+    // travel that reverses direction, whichever way it started.
+    const double step = std::hypot(x - m_shakeX, y - m_shakeY);
+    m_shakeX = x;
+    m_shakeY = y;
+    if (step > kShakeMaxStep) {
+      // A cursor warped across the screen starts a new shake, not a fast one. The
+      // pointer can also land exactly where it last was, with nothing to say how
+      // it got there, so the travel so far is not carried across the jump either.
+      m_shakeTravel = 0;
+      m_shakeBackward = false;
+      m_shakeLastCell = 0;
+      m_shakeLastX = x;
+      return;
+    }
+    const double direction = x - m_shakeLastX;
+    if (direction != 0) {
+      const bool reversed = m_shakeLastCell != 0 && (direction > 0) != m_shakeBackward;
+      m_shakeLastCell = direction > 0 ? 1 : -1;
+      if (reversed) {
+        m_shakeBackward = !m_shakeBackward;
+        m_shakeTravel = 0;
+        return;
+      }
+    }
+    m_shakeLastX = x;
+    m_shakeTravel += step;
+    if (m_shakeTravel >= static_cast<double>(settings.shakeThreshold)) {
+      m_shakeTravel = 0;
+      if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+        enlarge->trigger();
+      }
+    }
+  }
+
+  void Cursor::syncEnlargedCursor() const {
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->move(m_cursor->x, m_cursor->y);
+    }
   }
 
   void Cursor::forwardEffectPointer() const {
@@ -372,6 +464,9 @@ namespace umbriel {
   void Cursor::handleOutputLayoutChange() const {
     m_server->effects().forgetPointerOutput();
     forwardEffectPointer();
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->handleOutputLayoutChange();
+    }
   }
 
   int Cursor::onHideTimer(void* data) {
@@ -809,6 +904,9 @@ namespace umbriel {
     }
     m_activeXcursorManager = nullptr;
     m_activeXcursorName.clear();
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->setSurface(m_clientCursorSurface, m_clientCursorHotspotX, m_clientCursorHotspotY);
+    }
   }
 
   void Cursor::captureXwaylandCursorImage(wlr_buffer* buffer) {
@@ -995,6 +1093,9 @@ namespace umbriel {
     }
     m_activeXcursorManager = m_xcursorManager;
     m_activeXcursorName = name;
+    if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+      enlarge->setXcursor(name);
+    }
   }
 
 #ifdef UMBRIEL_HARNESS
@@ -1556,6 +1657,7 @@ namespace umbriel {
     const double oldX = m_cursor->x;
     const double oldY = m_cursor->y;
     wlr_cursor_move(m_cursor, &event->pointer->base, dx, dy);
+    syncEnlargedCursor();
     processMotion(event->time_msec, oldX, oldY);
   }
 
@@ -1598,6 +1700,7 @@ namespace umbriel {
     confineRuleDelta(&dx, &dy);
     promotePendingModRightResize(m_cursor->x + dx, m_cursor->y + dy);
     wlr_cursor_move(m_cursor, &event->pointer->base, dx, dy);
+    syncEnlargedCursor();
     processMotion(event->time_msec, oldX, oldY);
   }
 
@@ -1613,6 +1716,12 @@ namespace umbriel {
         capture->captureButton(event->time_msec, event->button, event->state == WL_POINTER_BUTTON_STATE_PRESSED);
       }
       return;
+    }
+    // A press means the pointer was found and is being used, so the enlargement has done its job.
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+      if (CursorEnlarge* enlarge = m_server->cursorEnlarge()) {
+        enlarge->dismiss();
+      }
     }
     processButton(&event->pointer->base, event->time_msec, event->button, event->state);
   }

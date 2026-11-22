@@ -504,7 +504,53 @@ namespace {
     return umbriel::actionFromRequest(nlohmann::json::parse(text), error);
   }
 
+  const umbriel::IpcCommandSpec* command(std::string_view name) {
+    for (const umbriel::IpcCommandSpec& spec : umbriel::ipcCommands()) {
+      if (spec.name == name) {
+        return &spec;
+      }
+    }
+    return nullptr;
+  }
+
 } // namespace
+
+// Every command the CLI hands out has a name, a handler, a description, and an argument form that agrees with whether
+// it takes arguments. A spec missing one of those fails far from here, in argument parsing or in the help text.
+UMBRIEL_TEST(everyCommandHasACompleteSpecification) {
+  for (const umbriel::IpcCommandSpec& spec : umbriel::ipcCommands()) {
+    const std::string name(spec.name);
+    CHECK(!spec.name.empty());
+    CHECK(spec.handle != nullptr);
+    CHECK(!spec.description.empty());
+    CHECK_EQ(spec.takesArgs, !spec.argSpec.empty());
+    CHECK(spec.replyTimeoutSec > 0);
+    if (!name.empty() && spec.handle == nullptr) {
+      std::println(stderr, "  command without a handler: {}", name);
+    }
+  }
+}
+
+// The agent seat's commands are one family. `umbriel agent <verb>` rewrites to `agent-<verb>`, so every verb the CLI
+// offers has to resolve to a registered command, and the two read-only ones stay grouped as queries.
+UMBRIEL_TEST(agentCommandsAreRegisteredAsOneFamily) {
+  for (const char* const name :
+       {"agent", "agent-take", "agent-release", "agent-capture", "agent-pointer", "agent-click", "agent-scroll",
+        "agent-key", "agent-type", "agent-act", "agent-spawn"}) {
+    CHECK(command(name) != nullptr);
+  }
+  for (const char* const verb :
+       {"take", "release", "capture", "pointer", "click", "scroll", "key", "type", "act", "spawn"}) {
+    CHECK(command("agent-" + std::string(verb)) != nullptr);
+  }
+  const auto* state = command("agent");
+  const auto* capture = command("agent-capture");
+  const auto* take = command("agent-take");
+  CHECK(state != nullptr && state->group == umbriel::IpcCommandGroup::Inspect);
+  CHECK(capture != nullptr && capture->group == umbriel::IpcCommandGroup::Inspect);
+  CHECK(take != nullptr && take->group == umbriel::IpcCommandGroup::Control);
+  CHECK(take != nullptr && take->takesArgs);
+}
 
 // The CLI parses words and sends the structured request, so every payload the word grammar produces must survive the
 // trip through the request unchanged.

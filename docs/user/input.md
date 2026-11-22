@@ -282,17 +282,27 @@ follows_focus = false
 hide_when_typing = false
 hide_timeout_ms = 0
 hide_on_touch = true
+shake_to_enlarge = false
+enlarge_zoom = 3.0
+enlarge_threshold = 2000
+enlarge_hold_ms = 1500
 ```
 
-| Key                | Range or values | Description                                        |
-| ------------------ | --------------- | -------------------------------------------------- |
-| `theme`            | string          | Xcursor theme; empty uses the environment default. |
-| `size`             | 1 to 512        | Cursor size in logical pixels.                     |
-| `hardware_cursor`  | bool            | Use a hardware cursor plane when available.        |
-| `follows_focus`    | bool            | Follow keyboard-driven window focus.               |
-| `hide_when_typing` | bool            | Hide after a non-modifier key press.               |
-| `hide_timeout_ms`  | 0 to 3600000    | Hide after inactivity; `0` disables the timeout.   |
-| `hide_on_touch`    | bool            | Hide on touchscreen input.                         |
+| Key                 | Range or values | Description                                                  |
+| ------------------- | --------------- | ------------------------------------------------------------ |
+| `theme`             | string          | Xcursor theme; empty uses the environment default.           |
+| `size`              | 1 to 512        | Cursor size in logical pixels.                               |
+| `hardware_cursor`   | bool            | Use a hardware cursor plane when available.                  |
+| `follows_focus`     | bool            | Follow keyboard-driven window focus.                         |
+| `hide_when_typing`  | bool            | Hide after a non-modifier key press.                         |
+| `hide_timeout_ms`   | 0 to 3600000    | Hide after inactivity; `0` disables the timeout.             |
+| `hide_on_touch`     | bool            | Hide on touchscreen input.                                   |
+| `shake_to_enlarge`  | bool            | Shake the pointer to grow the cursor.                        |
+| `enlarge_zoom`      | 1.0 to 10.0     | How much larger the cursor grows; `1.0` leaves it alone.     |
+| `enlarge_threshold` | 100 to 20000    | Pointer travel, in logical pixels, that a shake needs.       |
+| `enlarge_hold_ms`   | 0 to 60000      | How long the grown cursor stays; `0` keeps it until a click. |
+
+With `shake_to_enlarge = true`, shaking the pointer sideways grows the cursor to `enlarge_zoom` times its size, so it is easy to find on a large or busy screen. The growth follows the cursor instead of leaving a bigger image behind, and it keeps the cursor image the focused client draws itself, drawing it on top of the very same window. It goes back at `enlarge_hold_ms` after the shake, or as soon as a pointer button goes down, whichever comes first; `0` holds it until the click. `enlarge_threshold` is the shortest back-and-forth travel that counts as a shake, so a small screen or a slow hand wants a smaller value. A grown cursor is a scene image of the compositor, so no client sees it and screen sharing captures it only if it captures the compositor's own cursor.
 
 Set `hardware_cursor = false` to work around hardware cursor flicker or disappearance. Set `hide_timeout_ms` to a value from 1 to 3600000 to hide an inactive cursor; `0` disables the timeout. With `hide_on_touch = true` (the default), touching the screen hides the cursor until the next pointer or tablet activity.
 

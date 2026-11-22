@@ -880,6 +880,7 @@ core_sources = files(
   'src/scene/surface_shadow.cpp',
   'src/scene/config_banner.cpp',
   'src/scene/quit_confirm.cpp',
+  'src/scene/cursor_enlarge.cpp',
   'src/scene/cheatsheet.cpp',
   'src/scene/text_buffer.cpp',
   'src/scene/shortcut_approval.cpp',
@@ -889,6 +890,7 @@ core_sources = files(
   'src/scene/ssd_frame.cpp',
   'src/scene/tab_bar_style.cpp',
   'src/scene/tab_label_cache.cpp',
+  'src/agent/agent_seat.cpp',
   'src/lock/session_lock.cpp',
   'src/overview/overview.cpp',
   'src/workspace/workspace.cpp',
@@ -1034,6 +1036,13 @@ install_data(
 install_data(
   'examples/config.toml',
   install_dir: get_option('datadir') / 'umbriel',
+)
+
+# The agent skill: instructions for a program driving a window through the
+# agent seat, installable by an agent runtime and readable by a person.
+install_data(
+  'data/agent/skill/SKILL.md',
+  install_dir: get_option('datadir') / 'umbriel' / 'agent' / 'skill',
 )
 # Bundled effect presets: each directory holds the preset's shader and an
 # effect.toml that defines it without selecting it. Users include the TOML and

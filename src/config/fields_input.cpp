@@ -343,6 +343,10 @@ namespace umbriel {
           boolean("hide_when_typing", &In::Cursor::hideWhenTyping),
           integer("hide_timeout_ms", 0, 3600000, &In::Cursor::hideTimeoutMs),
           boolean("hide_on_touch", &In::Cursor::hideOnTouch),
+          boolean("shake_to_enlarge", &In::Cursor::shakeToEnlarge),
+          real("enlarge_zoom", 1.0, 10.0, &In::Cursor::zoomFactor),
+          integer("enlarge_threshold", 100, 20000, &In::Cursor::shakeThreshold),
+          integer("enlarge_hold_ms", 0, 60000, &In::Cursor::enlargeHoldMs),
       };
       static const Fields<In::DragEdgeScroll> dragEdgeScroll{
           boolean("enabled", &In::DragEdgeScroll::enabled),

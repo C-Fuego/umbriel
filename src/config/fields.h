@@ -136,6 +136,7 @@ namespace umbriel {
   registry::Field<Config> appearanceTable();
   registry::Field<Config> overviewTable();
   registry::Field<Config> hotCornersTable();
+  registry::Field<Config> agentTable();
   registry::Field<Config> generalTable();
   registry::Field<Config> environmentTable();
   registry::Field<Config> eventsTable();

@@ -232,6 +232,21 @@ disable_dynamic_confirmation = false
 | ------------------------------ | ---- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `disable_dynamic_confirmation` | bool | `false` | Apply set and follow actions immediately without first confirming them. This can expose another window or output after an accidental key press. |
 
+## Agent seat
+
+The [agent seat](automation.md) is a second seat for a program driving one window: its own pointer, its own keyboard focus, apart from the person's. These settings are read when the compositor starts.
+
+```toml
+[agent]
+off = false
+output = ""
+```
+
+| Key      | Type   | Default | Description                                                                                                                                                                       |
+| -------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `off`    | bool   | `false` | Keep the agent seat from existing. A seat is registered with clients when it is created, so this takes effect at startup; the agent commands then report `the agent seat is off`.  |
+| `output` | string | `""`    | An output the agent works on. When set, a virtual output by that name is created at startup and every taken window is moved onto it, then moved back when released. Empty keeps taken windows where they are. An output that already has the name is used instead of creating one. |
+
 ## Global shortcuts
 
 Override an application's registered shortcuts by its exact application ID and shortcut IDs:

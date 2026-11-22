@@ -403,8 +403,12 @@ namespace umbriel {
     static void onClientCursorClientCommit(wl_listener* listener, void* data);
     static void onClientCursorCommit(wl_listener* listener, void* data);
     void updateHideTimer();
+    // Turns a left-and-right shake into an enlarged cursor.
+    void noteShake();
     // Sends the pointer and its visibility to the cursor effect, only while one is active.
     void forwardEffectPointer() const;
+    // Carries an enlarged cursor along with the pointer.
+    void syncEnlargedCursor() const;
     static int onHideTimer(void* data);
     void updateHotCorner();
     void cancelHotCorner();
@@ -501,6 +505,14 @@ namespace umbriel {
     wl_event_source* m_sceneRefocusIdle = nullptr;
     bool m_compositorOwnsCursor = false;
     bool m_cursorHidden = false;
+    // Shake-to-enlarge travel since it last reversed direction.
+    double m_shakeTravel = 0;
+    double m_shakeX = 0;
+    double m_shakeY = 0;
+    double m_shakeLastX = 0;
+    int8_t m_shakeLastCell = 0;
+    bool m_shakeBackward = false;
+    bool m_shakeSeeded = false;
     std::string m_compositorCursorName;
     // What the focused client last asked the cursor to be, replayed when a
     // compositor override ends. Wayland scopes a cursor to the pointer focus,

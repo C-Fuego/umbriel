@@ -327,6 +327,14 @@ int main(int argc, char** argv) {
     // IPC subcommands
 
     // Not an IpcCommandSpec: the reply is a stream, not one response, so it has its own client path.
+    // `umbriel agent <verb>` is `umbriel agent-<verb>`: the agent commands read
+    // as one family, and a bare `umbriel agent` reads the seat.
+    if (std::strcmp(argv[1], "agent") == 0 && argc > 2 && argv[2][0] != '-') {
+      if (const auto* inner = umbriel::findIpcCommand("agent-" + std::string(argv[2])); inner != nullptr) {
+        return runSpecCommand(*inner, argc, argv, 3);
+      }
+    }
+
     if (std::strcmp(argv[1], "subscribe") == 0) {
       std::vector<std::string> events;
       for (int i = 2; i < argc; ++i) {

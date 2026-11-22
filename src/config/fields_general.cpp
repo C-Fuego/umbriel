@@ -470,4 +470,13 @@ namespace umbriel {
     return registry::table("screencast", &Config::screenCast, screenCastFields());
   }
 
+  registry::Field<Config> agentTable() {
+    using A = Config::Agent;
+    static const registry::Fields<A> fields{
+        registry::boolean("off", &A::off),
+        registry::text("output", &A::output),
+    };
+    return registry::table("agent", &Config::agent, fields);
+  }
+
 } // namespace umbriel

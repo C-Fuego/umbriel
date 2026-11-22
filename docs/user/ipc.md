@@ -27,6 +27,28 @@ Replies use `{"ok": ...}` or `{"err": "..."}`. Commands that take arguments send
 | `{"cmd":"input-capture-revoke","args":["<id>"]}`             | `umbriel input-capture-revoke <id>`             |
 | `{"cmd":"global-shortcuts"}`                                 | `umbriel global-shortcuts --json`               |
 | `{"cmd":"global-shortcuts-revoke","args":["<application>"]}` | `umbriel global-shortcuts-revoke <application>` |
+| `{"cmd":"agent"}`                                            | `umbriel agent --json`                          |
+| `{"cmd":"agent-capture"}`                                    | `umbriel agent capture --json`                  |
+
+## The agent seat
+
+The agent commands drive the [agent seat](automation.md): a second seat for a program working one window, with its own pointer and keyboard focus. They are ordinary IPC commands, so a socket client reaches them the same way `umbriel` does.
+
+| Request                                                       | CLI                                 |
+| ------------------------------------------------------------- | ----------------------------------- |
+| `{"cmd":"agent"}`                                             | `umbriel agent`                     |
+| `{"cmd":"agent-capture"}`                                     | `umbriel agent capture`             |
+| `{"cmd":"agent-take","args":["<window-id>"]}`                 | `umbriel agent take <window-id>`    |
+| `{"cmd":"agent-release"}`                                     | `umbriel agent release`             |
+| `{"cmd":"agent-pointer","args":["<x>","<y>"]}`                | `umbriel agent pointer <x> <y>`     |
+| `{"cmd":"agent-click","args":["<button>","<x>","<y>"]}`       | `umbriel agent click left 240 120`  |
+| `{"cmd":"agent-scroll","args":["<notches>"]}`                 | `umbriel agent scroll <notches>`    |
+| `{"cmd":"agent-key","args":["<keycode>"]}`                    | `umbriel agent key 28`              |
+| `{"cmd":"agent-type","args":["<text>", "..."]}`               | `umbriel agent type <text...>`      |
+| `{"cmd":"agent-act","args":["<action>","k=v", "..."]}`        | `umbriel agent act <action> [k=v]`  |
+| `{"cmd":"agent-spawn","args":["<command>", "..."]}`           | `umbriel agent spawn <command...>`  |
+
+`agent` and `agent-capture` are queries; the rest control the seat. Every reply is the seat state under `ok` (see [Read the reply](automation.md#read-the-reply)) or an `err` string (see [When it says no](automation.md#when-it-says-no)).
 
 ## Actions
 
